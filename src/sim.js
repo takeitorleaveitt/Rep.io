@@ -97,6 +97,7 @@
   }
 
   const radiusOf = t => 17 + Math.pow(t.level, 0.62) * 3.4;
+  const moveSpeed = (level, speedSkill) => (262 + speedSkill * 26) * (1 - Math.min(0.32, level * 0.004));
   const skillMax = key => SKILLS.find(s => s.key === key).max;
 
   function unlocked(t) { return TIERS.filter(tr => t.level >= tr.level); }
@@ -164,7 +165,7 @@
         level: 1, xp: 0, score: 0, kills: 0, points: 0, weapon: 0,
         skills: SKILLS.reduce((o, s) => (o[s.key] = 0, o), {}),
         hue: opts.hue ?? (rnd(0, 360) | 0),
-        cool: 0, recoil: 0, alive: true, invuln: 3,
+        cool: 0, recoil: 0, alive: true, invuln: 3, spawnedAt: this.time,
         ai: { mode: 'roam', target: null, wander: rnd(0, TAU), t: 0, jitter: 0 },
       };
       if (opts.level > 1) { t.level = opts.level; t.points = opts.level - 1; }
@@ -177,7 +178,16 @@
       const name = this.botNames[this.botSeq % this.botNames.length] +
                    (this.botSeq >= this.botNames.length ? this.botSeq : '');
       this.botSeq++;
-      return this.addTank({ isBot: true, name, level: clamp(Math.round(rnd(1, 5)), 1, 8) });
+      return this.addTank({ isBot: true, name, level: this.botLevel() });
+    }
+
+    // Aim bots at the level of the people actually playing here.
+    botLevel() {
+      const humans = this.tanks.filter(t => !t.isBot && t.alive);
+      const ref = humans.length
+        ? humans.reduce((n, t) => n + t.level, 0) / humans.length
+        : 3;
+      return clamp(Math.round(rnd(1, Math.max(5, ref * 1.25))), 1, 40);
     }
 
     removeTank(t) {
@@ -186,10 +196,13 @@
     }
 
     // ---- derived stats. Bots ramp from soft to full strength over four minutes.
-    botEdge(t) { return t.isBot ? clamp(0.45 + this.time / 240, 0.45, 1) : 1; }
+    botEdge(t) {
+      if (!t.isBot) return 1;
+      return clamp(0.45 + (this.time - (t.spawnedAt || 0)) / 240, 0.45, 1);
+    }
     maxHp(t) { return (52 + (t.level - 1) * 7 + t.skills.hp * 22) * (t.isBot ? lerp(0.55, 1, this.botEdge(t)) : 1); }
     regenOf(t) { return 0.35 + t.skills.regen * 1.5 + this.maxHp(t) * 0.0007 * t.skills.regen; }
-    speedOf(t) { return (262 + t.skills.speed * 26) * (1 - Math.min(0.32, t.level * 0.004)); }
+    speedOf(t) { return moveSpeed(t.level, t.skills.speed); }
     bodyDmg(t) { return (10 + t.level * 1.1) * this.botEdge(t); }
     fireRate(t) { return (0.42 / (1 + t.skills.reload * 0.16)) * (t.isBot ? lerp(1.7, 1, this.botEdge(t)) : 1); }
     bulletDmg(t) { return (7 + t.skills.damage * 4.5 + t.level * 0.32) * this.botEdge(t); }
@@ -517,13 +530,13 @@
     recycleBots() {
       for (const t of this.tanks) {
         if (t.alive || !t.isBot) continue;
-        const level = clamp(Math.round(rnd(1, 3 + this.time / 45)), 1, 30);
+        const level = this.botLevel();
         const spot = this.safeSpawn();
         Object.assign(t, {
           x: spot.x, y: spot.y, px: spot.x, py: spot.y, vx: 0, vy: 0,
           level, xp: 0, score: 0, kills: 0, points: level - 1, weapon: 0,
           skills: SKILLS.reduce((o, s) => (o[s.key] = 0, o), {}),
-          buildOrder: null, alive: true, invuln: 3, cool: 0,
+          buildOrder: null, alive: true, invuln: 3, cool: 0, spawnedAt: this.time,
           hue: rnd(0, 360) | 0, ai: { mode: 'roam', target: null, wander: rnd(0, TAU), t: 0, jitter: 0 },
         });
         t.maxhp = this.maxHp(t); t.hp = t.maxhp;
@@ -562,7 +575,7 @@
                     unlocked(t).indexOf(tierOf(t)), t.name, +t.recoil.toFixed(2)]);
       }
       const bullets = [];
-      for (const b of this.bullets) if (vis(b)) bullets.push([R(b.x), R(b.y), R(b.r), b.hue]);
+      for (const b of this.bullets) if (vis(b)) bullets.push([R(b.x), R(b.y), R(b.r), b.hue, R(b.vx), R(b.vy)]);
       const shapes = [];
       for (const s of this.shapes) {
         if (!vis(s)) continue;
@@ -587,6 +600,8 @@
 
   return {
     World, TIERS, SKILLS, SHAPE_KINDS, WORLD, MAX_LEVEL, TAU,
-    xpForLevel, radiusOf, unlocked, tierOf, skillMax, clamp, lerp, rnd, segDist2,
+    xpForLevel, radiusOf, moveSpeed, unlocked, tierOf, skillMax,
+    clamp, lerp, rnd, segDist2,
+    MAGNET, MAGNET_PULL, FRICTION, ORB_COUNT, BOT_NAMES,
   };
 });

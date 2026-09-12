@@ -100,6 +100,15 @@ class Room {
 
     this.world.recycleBots();
 
+    // Pending respawns, once the brief re-entry delay has passed.
+    for (const c of this.clients) {
+      const t = c.tank;
+      if (t && !t.alive && t.wantRespawn && this.world.time - (t.diedAt || 0) >= 0.5) {
+        t.wantRespawn = false;
+        this.world.respawn(t);
+      }
+    }
+
     // Route events to the clients that should hear them.
     for (const c of this.clients) c.pending.length = 0;
     for (const ev of this.world.events) {
@@ -130,7 +139,8 @@ class Room {
         const snap = this.world.snapshotFor(t, c.halfW, c.halfH);
         snap.t = 's';
         snap.me = t.alive ? {
-          x: Math.round(t.x), y: Math.round(t.y), hp: Math.round(t.hp),
+          x: Math.round(t.x), y: Math.round(t.y),
+          vx: Math.round(t.vx), vy: Math.round(t.vy), hp: Math.round(t.hp),
           maxhp: Math.round(t.maxhp), level: t.level, xp: Math.round(t.xp),
           need: Sim.xpForLevel(t.level), score: Math.floor(t.score),
           points: t.points, weapon: t.weapon, guns: Sim.unlocked(t).length,
@@ -147,6 +157,8 @@ class Room {
 }
 
 const rooms = [];
+
+function totalHumans() { return rooms.reduce((n, r) => n + r.humans, 0); }
 
 // Put a new player in the busiest room that still has space, so two or nine
 // people online end up in the same arena rather than three empty ones.
@@ -177,6 +189,7 @@ wss.on('connection', ws => {
   };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
+  client.send({ t: 'hello', online: totalHumans(), rooms: rooms.length });
 
   ws.on('message', raw => {
     let msg;
@@ -210,8 +223,10 @@ wss.on('connection', ws => {
 
       case 'respawn':
         if (!t || t.alive || !w) return;
-        if (w.time - (t.diedAt || 0) < 0.5) return;      // no instant re-entry
-        w.respawn(t);
+        // Honour it now, or remember it: dropping an early request would leave
+        // the player stuck on the death screen with nothing to retry.
+        if (w.time - (t.diedAt || 0) < 0.5) t.wantRespawn = true;
+        else w.respawn(t);
         break;
 
       case 'ping': client.send({ t: 'pong', n: msg.n }); break;

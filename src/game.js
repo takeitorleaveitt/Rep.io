@@ -1,91 +1,26 @@
-/* Rep.io — a single-file .io arena shooter.
-   Mix of diep.io (tanks, shapes, upgrades), agar.io (eat orbs to grow,
-   zoom out as you get big) and slither.io (open arena, bots, leaderboard). */
+/* Rep.io client — input, netcode and rendering.
+
+   The simulation lives in src/sim.js and runs on the server, which is
+   authoritative for every room. This file sends input, interpolates the
+   snapshots that come back, predicts its own tank so movement feels
+   immediate, and draws the result.
+
+   If the server cannot be reached (asleep, offline, opened as a local file)
+   the same sim.js runs here in the browser instead and the game carries on
+   as single player. Everything below the net layer is written against one
+   normalised frame, so the renderer never knows which mode it is in. */
 (() => {
 'use strict';
 
-// ---------------------------------------------------------------- constants
-const WORLD = 6400;            // square arena, 0..WORLD on both axes
-const ORB_COUNT = 1350;
-const SHAPE_COUNT = 190;
-const BOT_COUNT = 12;
-const MAX_LEVEL = 75;
-const FRICTION = 0.87;
-const MAGNET = 150;            // pull radius, half of what it used to be
-const MAGNET_PULL = 280;       // twice as fast again
-const BULLET_RANGE = 1850;     // default reach in world units, not seconds
 const TAU = Math.PI * 2;
-const MINI = 124;              // minimap edge length in CSS pixels
-const FLOOR = '#ffffff';       // arena floor
-const GRID  = 'rgba(0, 0, 0, 0.28)';   // black grid, dialled back so it does not vibrate
-const INK   = '#171a21';       // world-space text on the white floor
+const MINI = 124;                 // minimap edge length in CSS pixels
+const FLOOR = '#14161c';          // arena floor
+const GRID = '#1c1f27';           // grid lines
+const INTERP_DELAY = 0.1;         // render this far behind the server, in seconds
+const INPUT_HZ = 20;
 
-const SKILLS = [
-  { key: 'reload', label: 'Reload'      },
-  { key: 'damage', label: 'Damage'      },
-  { key: 'pen',    label: 'Bullet HP'   },
-  { key: 'bspeed', label: 'Bullet Spd'  },
-  { key: 'hp',     label: 'Health'      },
-  { key: 'regen',  label: 'Regen'       },
-  { key: 'speed',  label: 'Move Speed'  },
-];
-const SKILL_MAX = 9;
-
-// Barrel layouts unlock with level, diep.io style.
-const TIERS = [
-  { level: 1,  name: 'Scout',      barrels: [{ a: 0, w: 1, spread: 0.05 }] },
-  { level: 6,  name: 'Twin',       barrels: [{ a: -0.10, w: 0.8 }, { a: 0.10, w: 0.8 }] },
-  { level: 12, name: 'Sniper',     barrels: [{ a: 0, w: 1.25, spread: 0.008, speed: 1.7, dmg: 1.8, rate: 2.1, range: 1.9 }] },
-  { level: 18, name: 'Triplet',    barrels: [{ a: -0.30, w: .8 }, { a: 0, w: 1 }, { a: 0.30, w: .8 }] },
-  { level: 24, name: 'Hunter',     barrels: [{ a: -0.26, w: .8 }, { a: 0.26, w: .8 }, { a: Math.PI, w: 1, rate: 1.4 }] },
-  { level: 30, name: 'Spreadshot', barrels: [{ a: -0.55, w: .7 }, { a: -0.28, w: .8 }, { a: 0, w: 1 }, { a: 0.28, w: .8 }, { a: 0.55, w: .7 }] },
-  { level: 38, name: 'Annihilator',barrels: [
-      { a: 0, w: 1.5, speed: 0.85, dmg: 2.6, rate: 2.4, size: 1.7 },
-      { a: Math.PI * 0.66, w: .7 }, { a: -Math.PI * 0.66, w: .7 }] },
-  // The last three. Each is a different answer, not a strict upgrade — which is
-  // the point of being able to switch back and forth.
-  { level: 45, name: 'Octo', barrels: Array.from({ length: 8 }, (_, i) => (
-      { a: i * Math.PI / 4, w: 0.72, dmg: 0.72, rate: 1.15, range: 0.8 })) },
-  { level: 55, name: 'Railgun', barrels: [
-      { a: 0, w: 1.1, spread: 0.004, speed: 2.6, dmg: 5.5, rate: 4.2, size: 1.25, range: 2.4 },
-      { a: Math.PI * 0.8, w: .55, dmg: .4, rate: 4.2 },
-      { a: -Math.PI * 0.8, w: .55, dmg: .4, rate: 4.2 }] },
-  { level: 75, name: 'Overlord', barrels: [
-      { a: 0, w: 1.6, speed: 1.15, dmg: 2.2, rate: 1.5, size: 1.4 },
-      { a: -0.42, w: .85, dmg: 1.1 }, { a: 0.42, w: .85, dmg: 1.1 },
-      { a: -0.85, w: .7 }, { a: 0.85, w: .7 },
-      { a: Math.PI * 0.88, w: .8, rate: 1.5 }, { a: -Math.PI * 0.88, w: .8, rate: 1.5 }] },
-];
-
-const SHAPE_KINDS = [
-  { sides: 4, r: 22, hp: 12,   xp: 12,   hue: 48,  name: 'square' },
-  { sides: 3, r: 19, hp: 22,   xp: 30,   hue: 8,   name: 'triangle' },
-  { sides: 5, r: 38, hp: 140,  xp: 190,  hue: 232, name: 'pentagon' },
-  { sides: 5, r: 78, hp: 1300, xp: 1800, hue: 276, name: 'alpha' },
-];
-
-const BOT_NAMES = ['Zap', 'Blob', 'Nomnom', 'Turret', 'Vortex', 'Pixel', 'Wasp', 'Chomp',
-  'Kiwi', 'Rocket', 'Muffin', 'Glitch', 'Tofu', 'Nova', 'Bandit', 'Cobalt', 'Yeet',
-  'Pancake', 'Specter', 'Wombat', 'Zigzag', 'Donut', 'Havoc', 'Noodle', 'Quark'];
-
-// ---------------------------------------------------------------- helpers
-const rnd = (a, b) => a + Math.random() * (b - a);
-const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-const dist2 = (a, b) => { const dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; };
-const pick = a => a[(Math.random() * a.length) | 0];
-const lerp = (a, b, t) => a + (b - a) * t;
-// Squared distance from point (px,py) to segment (ax,ay)-(bx,by).
-function segDist2(ax, ay, bx, by, px, py) {
-  const dx = bx - ax, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const qx = ax + dx * t - px, qy = ay + dy * t - py;
-  return qx * qx + qy * qy;
-}
-
-function angDiff(a, b) { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; }
-function xpForLevel(l) { return Math.round(13 * Math.pow(l, 1.1)); }
+const clamp = Sim.clamp, lerp = Sim.lerp;
+const WORLD = Sim.WORLD;
 
 // ---------------------------------------------------------------- nicknames
 const NAME_MIN = 2, NAME_MAX = 17;
@@ -112,8 +47,7 @@ function foldName(raw) {
   const mapped = raw.toLowerCase().replace(/[0-9@$!|+*._-]/g, c => LEET[c] ?? c);
   const spaced = mapped.replace(/[^a-z]+/g, ' ').trim();
   const tight = spaced.replace(/\s+/g, '');
-  const squashed = tight.replace(/(.)\1+/g, '$1');   // fuuuck -> fuck
-  return { spaced, tight, squashed };
+  return { spaced, tight, squashed: tight.replace(/(.)\1+/g, '$1') };
 }
 
 function validateName(raw) {
@@ -122,14 +56,12 @@ function validateName(raw) {
     return { ok: false, error: `Nickname needs at least ${NAME_MIN} letters.` };
   if (name.length > NAME_MAX)
     return { ok: false, error: `Nickname can be at most ${NAME_MAX} characters.` };
-
   const f = foldName(name);
   for (const w of BLOCK_SUB)
     if (f.tight.includes(w) || f.squashed.includes(w))
       return { ok: false, error: 'Pick a nickname without that word in it.' };
   for (const w of BLOCK_WORD) {
-    const re = new RegExp(`\\b${w}\\b`);
-    if (re.test(f.spaced) || f.tight === w || f.squashed === w)
+    if (new RegExp(`\\b${w}\\b`).test(f.spaced) || f.tight === w || f.squashed === w)
       return { ok: false, error: 'Pick a nickname without that word in it.' };
   }
   return { ok: true, name };
@@ -137,454 +69,323 @@ function validateName(raw) {
 
 // ---------------------------------------------------------------- state
 const state = {
-  orbs: [], shapes: [], tanks: [], bullets: [], fx: [],
-  player: null, cam: { x: WORLD / 2, y: WORLD / 2, zoom: 1 },
+  mode: 'menu',                 // menu | playing | dead
+  link: 'idle',                 // idle | connecting | online | offline
+  name: 'you',
   mouse: { x: 0, y: 0, down: false },
   keys: Object.create(null),
-  running: false, autofire: false, time: 0, startedAt: 0,
+  autofire: false,
+  cam: { x: WORLD / 2, y: WORLD / 2, zoom: 1 },
+  fx: [],
+  time: 0,
+  online: 0,
+  pop: { humans: 0, bots: 0 },
+  tiers: Sim.TIERS.map(t => ({ level: t.level, name: t.name })),
+  skills: Sim.SKILLS,
+  me: null,                     // authoritative own stats
+  lb: [],
+  dots: [],
+  killedBy: null,
+  pendingRespawn: null,     // seconds spent waiting for the server to revive us
 };
 
-// ---------------------------------------------------------------- entities
-function makeOrb(x, y) {
-  return {
-    x: x ?? rnd(20, WORLD - 20), y: y ?? rnd(20, WORLD - 20),
-    r: rnd(5, 9), hue: rnd(0, 360), xp: 4,
-    ph: rnd(0, TAU), vx: 0, vy: 0,
+// Own-tank prediction, so movement responds before the server answers.
+const pred = { x: WORLD / 2, y: WORLD / 2, vx: 0, vy: 0, ready: false };
+
+// ---------------------------------------------------------------- net
+const net = {
+  ws: null, id: null, snaps: [], orbs: [], lastInput: 0, offline: null,
+};
+
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws`;
+}
+
+function connect(then) {
+  if (location.protocol === 'file:') { goOffline(); then && then(); return; }
+  setLink('connecting');
+  let settled = false;
+  let ws;
+  try { ws = new WebSocket(wsUrl()); }
+  catch { goOffline(); then && then(); return; }
+  net.ws = ws;
+
+  const fail = () => {
+    if (settled) return;
+    settled = true;
+    goOffline();
+    then && then();
+  };
+  const timer = setTimeout(fail, 4000);
+
+  ws.onopen = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    setLink('online');
+    then && then();
+  };
+  ws.onmessage = e => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    onMessage(msg);
+  };
+  ws.onerror = fail;
+  ws.onclose = () => {
+    clearTimeout(timer);
+    if (!settled) { fail(); return; }
+    // Lost mid-game: fall back to a local world so play continues.
+    if (state.mode === 'playing' || state.mode === 'dead') {
+      goOffline();
+      startLocal();
+    } else setLink('offline');
   };
 }
 
-function makeShape(kind) {
-  const k = kind || (Math.random() < 0.62 ? SHAPE_KINDS[0]
-    : Math.random() < 0.75 ? SHAPE_KINDS[1]
-    : Math.random() < 0.93 ? SHAPE_KINDS[2] : SHAPE_KINDS[3]);
-  return {
-    kind: k, x: rnd(60, WORLD - 60), y: rnd(60, WORLD - 60),
-    r: k.r * rnd(0.92, 1.08), hp: k.hp, maxhp: k.hp,
-    rot: rnd(0, TAU), vr: rnd(-0.4, 0.4), vx: rnd(-8, 8), vy: rnd(-8, 8),
-    hue: k.hue, flash: 0,
-  };
+function send(obj) {
+  if (net.ws && net.ws.readyState === 1) net.ws.send(JSON.stringify(obj));
 }
 
-function makeTank(opts = {}) {
-  const t = {
-    id: Math.random().toString(36).slice(2),
-    name: opts.name || 'anon', isBot: !!opts.isBot,
-    x: opts.x ?? rnd(200, WORLD - 200), y: opts.y ?? rnd(200, WORLD - 200),
-    px: 0, py: 0,
-    vx: 0, vy: 0, angle: rnd(0, TAU), aim: 0,
-    level: 1, xp: 0, score: 0, kills: 0, points: 0,
-    skills: SKILLS.reduce((o, s) => (o[s.key] = 0, o), {}),
-    hue: opts.hue ?? rnd(0, 360),
-    cool: 0, recoil: 0, flash: 0, alive: true, invuln: 3, weapon: 0,
-    hp: 1, ai: { mode: 'roam', target: null, wander: rnd(0, TAU), t: 0, jitter: 0 },
-  };
-  t.maxhp = maxHp(t); t.hp = t.maxhp;
-  return t;
+function setLink(v) {
+  state.link = v;
+  const el = ui.link;
+  if (!el) return;
+  el.textContent = v === 'online' ? (state.online > 1 ? `Online · ${state.online} playing` : 'Online')
+    : v === 'connecting' ? 'Connecting…'
+    : v === 'offline' ? 'Offline · solo vs bots' : '';
+  el.className = 'link ' + v;
 }
 
-// ---------------------------------------------------------------- derived stats
-const radiusOf = t => 17 + Math.pow(t.level, 0.62) * 3.4;
-// Bots start the round as pushovers and sharpen up over the first few minutes,
-// so the opening is about farming and the late game is about fighting.
-const botEdge = t => t.isBot ? clamp(0.45 + state.time / 240, 0.45, 1) : 1;
-const maxHp    = t => (52 + (t.level - 1) * 7 + t.skills.hp * 22) * (t.isBot ? lerp(0.55, 1, botEdge(t)) : 1);
-const regenOf  = t => 0.35 + t.skills.regen * 1.5 + maxHp(t) * 0.0007 * t.skills.regen;
-const speedOf  = t => (262 + t.skills.speed * 26) * (1 - Math.min(0.32, t.level * 0.004));
-const bodyDmg  = t => (10 + t.level * 1.1) * botEdge(t);
-const fireRate = t => (0.42 / (1 + t.skills.reload * 0.16)) * (t.isBot ? lerp(1.7, 1, botEdge(t)) : 1);
-const bulletDmg= t => (7 + t.skills.damage * 4.5 + t.level * 0.32) * botEdge(t);
-const bulletHp = t => 6 + t.skills.pen * 5 + t.level * 0.2;
-const bulletSpd= t => 560 + t.skills.bspeed * 55;
-
-// Every gun the tank has earned, oldest first.
-function unlocked(t) { return TIERS.filter(tr => t.level >= tr.level); }
-
-// Players fire whichever gun they have selected; bots always take their newest.
-function tierOf(t) {
-  const list = unlocked(t);
-  if (t.isBot) return list[list.length - 1];
-  t.weapon = clamp(t.weapon | 0, 0, list.length - 1);
-  return list[t.weapon];
-}
-
-function switchWeapon(t, delta) {
-  const n = unlocked(t).length;
-  if (n < 2) return false;
-  t.weapon = ((t.weapon + delta) % n + n) % n;
-  t.cool = Math.max(t.cool, 0.18);   // small swap penalty so it isn't a free burst
-  return true;
-}
-
-// ---------------------------------------------------------------- progression
-function addXp(t, amount) {
-  if (!t.alive) return;
-  t.xp += amount; t.score += amount;
-  while (t.level < MAX_LEVEL && t.xp >= xpForLevel(t.level)) {
-    t.xp -= xpForLevel(t.level);
-    t.level++; t.points++;
-    const before = t.maxhp;
-    t.maxhp = maxHp(t);
-    t.hp += t.maxhp - before;
-    if (t === state.player) { burst(t.x, t.y, t.hue, 26, 260); Sfx.levelUp(); }
-    // Unlocking a gun selects it, so the reward is immediate; you can switch back.
-    const guns = unlocked(t).length;
-    if (guns - 1 > t.weapon && TIERS[guns - 1].level === t.level) {
-      t.weapon = guns - 1;
-      if (t === state.player) { Sfx.weapon(); syncWeapons(); }
+function onMessage(msg) {
+  switch (msg.t) {
+    case 'hello':
+      state.online = msg.online || 0;
+      setLink(state.link);
+      break;
+    case 'welcome':
+      net.id = msg.id;
+      if (msg.tiers) state.tiers = msg.tiers;
+      if (msg.skills) state.skills = msg.skills;
+      buildRows();
+      pred.ready = false;
+      break;
+    case 's': {
+      const snap = {
+        at: state.time, tanks: msg.tanks, bullets: msg.bullets,
+        shapes: msg.shapes, me: msg.me,
+      };
+      net.snaps.push(snap);
+      while (net.snaps.length > 4) net.snaps.shift();
+      if (msg.dots) state.dots = msg.dots;
+      if (msg.lb) state.lb = msg.lb;
+      if (msg.pop) state.pop = msg.pop;
+      if (msg.me && state.mode === 'dead' && state.pendingRespawn !== null) enterPlaying();
+      if (msg.me) {
+        state.me = msg.me;
+        if (!pred.ready) { pred.x = msg.me.x; pred.y = msg.me.y; pred.ready = true; }
+        // Reconcile against the server, extrapolated over the snapshot's age.
+        const age = INTERP_DELAY;
+        const sx = msg.me.x + msg.me.vx * age, sy = msg.me.y + msg.me.vy * age;
+        if (Math.hypot(sx - pred.x, sy - pred.y) > 420) { pred.x = sx; pred.y = sy; }
+        else { pred.x = lerp(pred.x, sx, 0.25); pred.y = lerp(pred.y, sy, 0.25); }
+      }
+      if (msg.ev) handleEvents(msg.ev, ev => !!ev.m, ev => ev.on === net.id);
+      break;
+    }
+    case 'o': {
+      // Kept as objects so the local magnet can nudge them between updates.
+      const a = msg.o, out = [];
+      for (let i = 0; i < a.length; i += 4) out.push({ x: a[i], y: a[i + 1], r: a[i + 2], hue: a[i + 3] });
+      net.orbs = out;
+      break;
     }
   }
-  if (t.level >= MAX_LEVEL) t.xp = Math.min(t.xp, xpForLevel(MAX_LEVEL));
 }
 
-function spend(t, key) {
-  if (t.points <= 0 || t.skills[key] >= SKILL_MAX) {
-    if (t === state.player) Sfx.deny();
-    return false;
-  }
-  t.points--; t.skills[key]++;
-  const before = t.maxhp; t.maxhp = maxHp(t);
-  t.hp += t.maxhp - before;
-  if (t === state.player) Sfx.upgrade();
-  return true;
+function goOffline() {
+  if (net.ws) { try { net.ws.onclose = null; net.ws.close(); } catch {} net.ws = null; }
+  setLink('offline');
 }
 
-// ---------------------------------------------------------------- combat
-function shoot(t) {
-  if (t.cool > 0) return;
-  const tier = tierOf(t);
-  const r = radiusOf(t);
-  for (const b of tier.barrels) {
-    const spread = (b.spread ?? 0.045) * (t.isBot ? 1.6 / botEdge(t) : 1);
-    const ang = t.angle + b.a + rnd(-spread, spread);
-    const speed = bulletSpd(t) * (b.speed ?? 1);
-    const size = (5.4 + r * 0.15) * (b.size ?? 1) * (b.w ?? 1);
-    state.bullets.push({
-      owner: t, hue: t.hue, x: t.x + Math.cos(ang) * (r + size),
-      y: t.y + Math.sin(ang) * (r + size),
-      vx: Math.cos(ang) * speed + t.vx * 0.35,
-      vy: Math.sin(ang) * speed + t.vy * 0.35,
-      r: size, dmg: bulletDmg(t) * (b.dmg ?? 1),
-      hp: bulletHp(t) * (b.dmg ?? 1),
-      // Live long enough to cross the gun's reach AND whatever is on screen, so
-      // a shot never evaporates in front of a target the player is aiming at.
-      life: Math.max(BULLET_RANGE * (b.range ?? 1), 780 / state.cam.zoom) / speed,
-    });
-    t.vx -= Math.cos(ang) * speed * 0.035;
-    t.vy -= Math.sin(ang) * speed * 0.035;
-  }
-  t.recoil = 1;
-  t.invuln = 0;                 // shooting drops your spawn shield
-  t.cool = fireRate(t) * (tier.barrels[0].rate ?? 1);
-  Sfx.shoot(t.x, t.y, tier.barrels[0].size ?? 1, t === state.player);
+// ---------------------------------------------------------------- offline world
+function startLocal() {
+  const w = new Sim.World();
+  const me = w.addTank({ name: state.name, hue: 198 });
+  for (let i = 0; i < 12; i++) w.addBot();
+  net.offline = { world: w, me };
+  net.id = me.id;
+  state.tiers = Sim.TIERS.map(t => ({ level: t.level, name: t.name }));
+  state.skills = Sim.SKILLS;
+  buildRows();
+  pred.x = me.x; pred.y = me.y; pred.ready = true;
+  state.mode = 'playing';
+  ui.overlay.classList.add('hidden');
 }
 
-function hurt(target, dmg, from) {
-  if (!target.alive || target.invuln > 0) return;
-  target.hp -= dmg; target.flash = 1;
-  if (target === state.player && dmg > 2) Sfx.hurt();
-  if (target.hp <= 0) kill(target, from);
-}
-
-function kill(t, by) {
-  if (!t.alive) return;
-  t.alive = false;
-  burst(t.x, t.y, t.hue, 46, 380);
-  // Drop a share of the score as orbs — agar.io style feeding frenzy.
-  const drops = clamp(Math.round(t.score * 0.02), 6, 80);
-  for (let i = 0; i < drops; i++) {
-    const a = rnd(0, TAU), d = rnd(0, radiusOf(t) * 3);
-    const o = makeOrb(t.x + Math.cos(a) * d, t.y + Math.sin(a) * d);
-    o.hue = t.hue; o.r = rnd(7, 11); o.xp = Math.max(3, (t.score * 0.16) / drops);
-    state.orbs.push(o);
+// ---------------------------------------------------------------- events -> sfx
+function handleEvents(list, isMine, isOnMe) {
+  for (const ev of list) {
+    const mine = isMine(ev), onMe = isOnMe(ev);
+    switch (ev.k) {
+      case 'shoot':  Sfx.shoot(ev.x, ev.y, ev.size || 1, mine); break;
+      case 'hit':    Sfx.hit(ev.x, ev.y, mine); burst(ev.x, ev.y, ev.hue, 4, 90); break;
+      case 'spark':  burst(ev.x, ev.y, ev.hue, 3, 70); break;
+      case 'pickup': if (mine) { Sfx.pickup(ev.x, ev.y); pop(ev.x, ev.y, ev.hue, ev.r); } break;
+      case 'break':  Sfx.shapeBreak(ev.x, ev.y, ev.big); burst(ev.x, ev.y, ev.hue, 14, 200); break;
+      case 'shield': Sfx.shield(ev.x, ev.y); burst(ev.x, ev.y, 200, 5, 120); break;
+      case 'hurt':   if (onMe) Sfx.hurt(); break;
+      case 'level':  if (mine) { Sfx.levelUp(); burst(ev.x, ev.y, ev.hue, 26, 260); } break;
+      case 'gun':    if (mine) { Sfx.weapon(); syncWeapons(); } break;
+      case 'up':     if (mine) Sfx.upgrade(); break;
+      case 'deny':   if (mine) Sfx.deny(); break;
+      case 'kill':   if (mine) Sfx.kill(); break;
+      case 'die':
+        burst(ev.x, ev.y, ev.hue, 46, 380);
+        if (onMe) { Sfx.die(); endRun(ev.byName); }
+        break;
+    }
   }
-  if (by && by.alive && by !== t) {
-    by.kills++;
-    addXp(by, 40 + t.score * 0.22);
-    if (by === state.player) Sfx.kill();
-  }
-  if (t === state.player) { Sfx.die(); endRun(by); }
 }
 
 function burst(x, y, hue, n, spd) {
   for (let i = 0; i < n; i++) {
-    const a = rnd(0, TAU), s = rnd(spd * 0.2, spd);
-    state.fx.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, r: rnd(1.5, 4), hue, life: 1, max: rnd(0.3, 0.7) });
+    const a = Math.random() * TAU, s = Sim.rnd(spd * 0.2, spd);
+    state.fx.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+                    r: Sim.rnd(1.5, 4), hue, life: 1, max: Sim.rnd(0.3, 0.7) });
+  }
+}
+function pop(x, y, hue, r) {
+  state.fx.push({ x, y, vx: 0, vy: 0, r: r || 6, hue, life: 1, max: 0.25 });
+}
+
+// ---------------------------------------------------------------- frame
+// One shape for the renderer, whichever mode produced it.
+const frame = { tanks: [], bullets: [], shapes: [], orbs: [] };
+
+function buildFrameOnline() {
+  const rt = state.time - INTERP_DELAY;
+  const s = net.snaps;
+  let a = null, b = null;
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i].at <= rt) { a = s[i]; b = s[i + 1] || null; break; }
+  }
+  if (!a) { a = s[0]; b = s[1] || null; }
+  if (!a) { frame.tanks = frame.bullets = frame.shapes = []; frame.orbs = net.orbs; return; }
+  const t = b && b.at > a.at ? clamp((rt - a.at) / (b.at - a.at), 0, 1) : 0;
+
+  // Tanks: interpolate by id between the bracketing snapshots.
+  const prev = b ? indexById(a.tanks) : null;
+  frame.tanks = (b ? b.tanks : a.tanks).map(row => {
+    const [id, x, y, angle, level, hue, hp, maxhp, inv, tierIdx, name, recoil] = row;
+    let rx = x, ry = y, ra = angle;
+    if (prev) {
+      const p = prev[id];
+      if (p) {
+        rx = lerp(p[1], x, t); ry = lerp(p[2], y, t);
+        ra = p[3] + Sim.clamp(((angle - p[3] + Math.PI * 3) % TAU) - Math.PI, -Math.PI, Math.PI) * t;
+      }
+    }
+    const own = id === net.id;
+    if (own) { rx = pred.x; ry = pred.y; ra = aimAngle(); }
+    return { id, x: rx, y: ry, angle: ra, level, hue, hp, maxhp, invuln: inv,
+             tierIdx, name, recoil, own };
+  });
+
+  // Bullets carry velocity, so they are dead-reckoned rather than interpolated.
+  const src = b || a;
+  const age = rt - src.at;
+  frame.bullets = src.bullets.map(([x, y, r, hue, vx, vy]) =>
+    ({ x: x + vx * age, y: y + vy * age, r, hue }));
+
+  const shPrev = b ? indexById(a.shapes) : null;
+  frame.shapes = (b ? b.shapes : a.shapes).map(row => {
+    const [id, x, y, r, sides, hue, hp, maxhp, rot] = row;
+    let rx = x, ry = y, rr = rot;
+    if (shPrev && shPrev[id]) {
+      const p = shPrev[id];
+      rx = lerp(p[1], x, t); ry = lerp(p[2], y, t);
+      rr = p[8] + Sim.clamp(((rot - p[8] + Math.PI * 3) % TAU) - Math.PI, -Math.PI, Math.PI) * t;
+    }
+    return { x: rx, y: ry, r, sides, hue, hp, maxhp, rot: rr };
+  });
+
+  frame.orbs = net.orbs;
+}
+
+function indexById(rows) {
+  const m = Object.create(null);
+  for (const r of rows) m[r[0]] = r;
+  return m;
+}
+
+function buildFrameLocal() {
+  const w = net.offline.world, me = net.offline.me;
+  frame.tanks = w.tanks.filter(t => t.alive).map(t => ({
+    id: t.id, x: t === me ? pred.x : t.x, y: t === me ? pred.y : t.y,
+    angle: t === me ? aimAngle() : t.angle, level: t.level, hue: t.hue,
+    hp: t.hp, maxhp: t.maxhp, invuln: t.invuln > 0 ? 1 : 0,
+    tierIdx: Sim.unlocked(t).indexOf(Sim.tierOf(t)), name: t.name,
+    recoil: t.recoil, own: t === me,
+  }));
+  frame.bullets = w.bullets;
+  frame.shapes = w.shapes.map(s => ({ x: s.x, y: s.y, r: s.r, sides: s.kind.sides,
+                                      hue: s.hue, hp: s.hp, maxhp: s.maxhp, rot: s.rot }));
+  frame.orbs = w.orbs;
+  state.dots = w.tanks.filter(t => t.alive).map(t => [t.x / 25, t.y / 25, t === me ? 1 : 0, t.hue]);
+  state.lb = w.leaderboard(6);
+  state.pop = { humans: 1, bots: w.tanks.filter(t => t.isBot).length };
+  if (me.alive) {
+    state.me = {
+      x: me.x, y: me.y, hp: me.hp, maxhp: me.maxhp, level: me.level,
+      xp: me.xp, need: Sim.xpForLevel(me.level), score: me.score, points: me.points,
+      weapon: me.weapon, guns: Sim.unlocked(me).length, skills: me.skills, kills: me.kills,
+    };
   }
 }
 
-// ---------------------------------------------------------------- bot AI
-function botThink(t, dt) {
-  const ai = t.ai;
-  ai.t -= dt;
-  const r = radiusOf(t);
-
-  // Re-evaluate a few times a second, not every frame.
-  if (ai.t <= 0) {
-    ai.t = rnd(0.18, 0.4);
-    ai.jitter = rnd(-0.12, 0.12);
-    let bestFood = null, bestFoodD = Infinity;
-    let bestFoe = null, bestFoeD = Infinity;
-    let threat = null, threatD = Infinity;
-
-    for (const s of state.shapes) {
-      const d = dist2(t, s);
-      if (d > 1300 * 1300) continue;
-      // Prefer shapes this bot can actually chew through.
-      const cost = d * (s.kind.hp > t.level * 45 ? 5 : 1);
-      if (cost < bestFoodD) { bestFoodD = cost; bestFood = s; }
-    }
-    for (const o of state.orbs) {
-      const d = dist2(t, o) * 0.6;
-      if (d < bestFoodD) { bestFoodD = d; bestFood = o; }
-    }
-    for (const e of state.tanks) {
-      if (e === t || !e.alive) continue;
-      const d = dist2(t, e);
-      if (d > 1500 * 1500) continue;
-      const mine = t.score + t.hp * 3, theirs = e.score + e.hp * 3;
-      if (theirs > mine * 1.55 && d < threatD) { threatD = d; threat = e; }
-      else if (theirs < mine * 1.3 && d < bestFoeD && !isFreshMeat(e)) { bestFoeD = d; bestFoe = e; }
-    }
-
-    if (threat && t.hp < t.maxhp * 0.45) { ai.mode = 'flee'; ai.target = threat; }
-    else if (bestFoe) { ai.mode = 'fight'; ai.target = bestFoe; }
-    else if (bestFood) { ai.mode = 'feed'; ai.target = bestFood; }
-    else { ai.mode = 'roam'; ai.target = null; ai.wander = rnd(0, TAU); }
-  }
-
-  // Spend upgrade points on a personality-flavoured build.
-  if (t.points > 0) {
-    const build = t.buildOrder || (t.buildOrder = shuffle(SKILLS.map(s => s.key)));
-    for (const k of build) if (spend(t, k)) break;
-  }
-
-  let mx = 0, my = 0, fire = false;
-  const tg = ai.target;
-  if (tg && (tg.alive === undefined || tg.alive)) {
-    const dx = tg.x - t.x, dy = tg.y - t.y, d = Math.hypot(dx, dy) || 1;
-    if (ai.mode === 'flee') { mx = -dx / d; my = -dy / d; t.angle = Math.atan2(dy, dx); fire = true; }
-    else if (ai.mode === 'fight') {
-      // Lead the shot, and keep a comfortable stand-off range.
-      const lead = d / bulletSpd(t);
-      const ax = tg.x + (tg.vx || 0) * lead - t.x, ay = tg.y + (tg.vy || 0) * lead - t.y;
-      t.angle = lerp(t.angle, t.angle + angDiff(t.angle, Math.atan2(ay, ax) + ai.jitter), 0.35);
-      const want = 320 + r * 4;
-      const push = d < want * 0.7 ? -1 : d > want ? 1 : 0;
-      mx = (dx / d) * push - (dy / d) * 0.5; my = (dy / d) * push + (dx / d) * 0.5;
-      fire = d < 900;
-    } else {
-      mx = dx / d; my = dy / d;
-      t.angle = lerp(t.angle, t.angle + angDiff(t.angle, Math.atan2(dy, dx)), 0.2);
-      fire = tg.kind !== undefined && d < 520;   // shoot shapes, not orbs
-    }
-  } else {
-    ai.wander += rnd(-0.6, 0.6) * dt;
-    mx = Math.cos(ai.wander); my = Math.sin(ai.wander);
-    t.angle += dt * 0.8;
-  }
-
-  // Stay away from the walls.
-  const m = 380;
-  if (t.x < m) mx += (m - t.x) / m;
-  if (t.x > WORLD - m) mx -= (t.x - (WORLD - m)) / m;
-  if (t.y < m) my += (m - t.y) / m;
-  if (t.y > WORLD - m) my -= (t.y - (WORLD - m)) / m;
-
-  const len = Math.hypot(mx, my) || 1;
-  t.ix = mx / len; t.iy = my / len;
-  if (fire) shoot(t);
+// ---------------------------------------------------------------- input
+function inputVector() {
+  const k = state.keys;
+  let ix = 0, iy = 0;
+  if (k.KeyA || k.ArrowLeft) ix--;
+  if (k.KeyD || k.ArrowRight) ix++;
+  if (k.KeyW || k.ArrowUp) iy--;
+  if (k.KeyS || k.ArrowDown) iy++;
+  if (state.touch) { ix = state.touch.x; iy = state.touch.y; }
+  const l = Math.hypot(ix, iy);
+  return l > 1 ? { x: ix / l, y: iy / l } : { x: ix, y: iy };
 }
 
-// Don't let bots swarm a tank that just spawned — that is not fun, it is a wall.
-function isFreshMeat(e) { return e.level <= 4 && e.score < 120; }
-
-function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[a[i], a[j]] = [a[j], a[i]]; } return a; }
-
-// ---------------------------------------------------------------- simulation
-function step(dt) {
-  state.time += dt;
-  const p = state.player;
-
-  // --- player input
-  if (p && p.alive) {
-    let ix = 0, iy = 0;
-    const k = state.keys;
-    if (k.KeyA || k.ArrowLeft) ix--;
-    if (k.KeyD || k.ArrowRight) ix++;
-    if (k.KeyW || k.ArrowUp) iy--;
-    if (k.KeyS || k.ArrowDown) iy++;
-    const l = Math.hypot(ix, iy) || 1;
-    p.ix = ix / l * (ix || iy ? 1 : 0); p.iy = iy / l * (ix || iy ? 1 : 0);
-    const w = worldFromScreen(state.mouse.x, state.mouse.y);
-    p.angle = Math.atan2(w.y - p.y, w.x - p.x);
-    if (state.mouse.down || state.autofire || k.Space) shoot(p);
-  }
-
-  // --- tanks
-  for (const t of state.tanks) {
-    if (!t.alive) continue;
-    if (t.isBot) botThink(t, dt);
-    const acc = speedOf(t) * 5.2;
-    t.vx += (t.ix || 0) * acc * dt;
-    t.vy += (t.iy || 0) * acc * dt;
-    const fr = Math.pow(FRICTION, dt * 60);
-    t.vx *= fr; t.vy *= fr;
-    const sp = Math.hypot(t.vx, t.vy), max = speedOf(t);
-    if (sp > max) { t.vx = t.vx / sp * max; t.vy = t.vy / sp * max; }
-    t.px = t.x; t.py = t.y;
-    t.x += t.vx * dt; t.y += t.vy * dt;
-
-    const r = radiusOf(t);
-    t.x = clamp(t.x, r, WORLD - r); t.y = clamp(t.y, r, WORLD - r);
-    t.cool = Math.max(0, t.cool - dt);
-    t.recoil *= Math.pow(0.001, dt);
-    t.flash *= Math.pow(0.002, dt);
-    t.invuln = Math.max(0, t.invuln - dt);
-    t.maxhp = maxHp(t);
-    if (t.hp < t.maxhp) t.hp = Math.min(t.maxhp, t.hp + regenOf(t) * dt);
-
-    // eat orbs
-    for (let i = state.orbs.length - 1; i >= 0; i--) {
-      const o = state.orbs[i];
-      if (segDist2(t.px, t.py, t.x, t.y, o.x, o.y) < (r + o.r) * (r + o.r)) {
-        addXp(t, o.xp);
-        if (t === state.player) Sfx.pickup(o.x, o.y);
-        state.fx.push({ x: o.x, y: o.y, vx: 0, vy: 0, r: o.r, hue: o.hue, life: 1, max: 0.25 });
-        state.orbs[i] = state.orbs[state.orbs.length - 1]; state.orbs.pop();
-      } else if (dist2(t, o) < MAGNET * MAGNET) {
-        // Snappy short-range magnet: orbs you're nearly touching jump to you.
-        const d = Math.hypot(o.x - t.x, o.y - t.y) || 1;
-        o.x += (t.x - o.x) / d * MAGNET_PULL * dt; o.y += (t.y - o.y) / d * MAGNET_PULL * dt;
-      }
-    }
-
-    // ram shapes
-    for (const s of state.shapes) {
-      const rr = r + s.r;
-      if (dist2(t, s) < rr * rr) {
-        const d = Math.hypot(s.x - t.x, s.y - t.y) || 1;
-        const nx = (s.x - t.x) / d, ny = (s.y - t.y) / d;
-        s.vx += nx * 90; s.vy += ny * 90;
-        t.vx -= nx * 60; t.vy -= ny * 60;
-        damageShape(s, bodyDmg(t) * dt * 6, t);
-        hurt(t, s.kind.hp * 0.09 * dt * 6, null);
-      }
-    }
-
-    // ram other tanks
-    for (const e of state.tanks) {
-      if (e === t || !e.alive) continue;
-      const er = radiusOf(e), rr = r + er;
-      if (dist2(t, e) < rr * rr) {
-        const d = Math.hypot(e.x - t.x, e.y - t.y) || 1;
-        const nx = (e.x - t.x) / d, ny = (e.y - t.y) / d;
-        const push = (rr - d) * 6;
-        t.vx -= nx * push; t.vy -= ny * push;
-        e.vx += nx * push; e.vy += ny * push;
-        hurt(e, bodyDmg(t) * dt * 3, t);
-      }
-    }
-  }
-
-  // --- bullets
-  for (let i = state.bullets.length - 1; i >= 0; i--) {
-    const b = state.bullets[i];
-    // Keep the previous position so this step can be tested as a swept segment.
-    const px = b.x, py = b.y;
-    b.x += b.vx * dt; b.y += b.vy * dt;
-    b.life -= dt;
-    let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > WORLD || b.y > WORLD;
-
-    if (!dead) for (const s of state.shapes) {
-      const rr = b.r + s.r;
-      if (segDist2(px, py, b.x, b.y, s.x, s.y) < rr * rr) {
-        damageShape(s, b.dmg, b.owner);
-        s.vx += b.vx * 0.05; s.vy += b.vy * 0.05;
-        b.hp -= s.kind.hp * 0.25; dead = b.hp <= 0;
-        state.fx.push({ x: b.x, y: b.y, vx: 0, vy: 0, r: b.r, hue: b.hue, life: 1, max: 0.18 });
-        if (dead) break;
-      }
-    }
-
-    if (!dead) for (const t of state.tanks) {
-      if (!t.alive || t === b.owner) continue;
-      const rr = b.r + radiusOf(t);
-      if (segDist2(px, py, b.x, b.y, t.x, t.y) < rr * rr) {
-        if (t.invuln > 0) {
-          // Blocked, not ignored: the round stops on the shield and says so.
-          burst(b.x, b.y, 200, 5, 120);
-          Sfx.shield(b.x, b.y);
-          dead = true; break;
-        }
-        hurt(t, b.dmg, b.owner);
-        t.vx += b.vx * 0.06; t.vy += b.vy * 0.06;
-        burst(t.x, t.y, b.hue, 4, 90);
-        Sfx.hit(t.x, t.y, b.owner === state.player);
-        dead = true; break;
-      }
-    }
-
-    if (dead) { state.bullets[i] = state.bullets[state.bullets.length - 1]; state.bullets.pop(); }
-  }
-
-  // --- shapes
-  for (let i = state.shapes.length - 1; i >= 0; i--) {
-    const s = state.shapes[i];
-    s.rot += s.vr * dt;
-    s.x += s.vx * dt; s.y += s.vy * dt;
-    s.vx *= Math.pow(0.2, dt); s.vy *= Math.pow(0.2, dt);
-    s.flash *= Math.pow(0.002, dt);
-    if (s.x < s.r || s.x > WORLD - s.r) s.vx *= -1;
-    if (s.y < s.r || s.y > WORLD - s.r) s.vy *= -1;
-    s.x = clamp(s.x, s.r, WORLD - s.r); s.y = clamp(s.y, s.r, WORLD - s.r);
-    if (s.hp <= 0) {
-      burst(s.x, s.y, s.hue, 14, 200);
-      Sfx.shapeBreak(s.x, s.y, clamp(s.kind.xp / 1800, 0, 1));
-      for (let n = 0; n < Math.min(14, 2 + s.kind.xp / 30); n++) {
-        const a = rnd(0, TAU), d = rnd(0, s.r);
-        const o = makeOrb(s.x + Math.cos(a) * d, s.y + Math.sin(a) * d);
-        o.hue = s.hue; o.xp = s.kind.xp / 14;
-        state.orbs.push(o);
-      }
-      state.shapes[i] = state.shapes[state.shapes.length - 1]; state.shapes.pop();
-    }
-  }
-
-  // --- particles
-  for (let i = state.fx.length - 1; i >= 0; i--) {
-    const f = state.fx[i];
-    f.x += f.vx * dt; f.y += f.vy * dt;
-    f.vx *= Math.pow(0.05, dt); f.vy *= Math.pow(0.05, dt);
-    f.life -= dt / f.max;
-    if (f.life <= 0) { state.fx[i] = state.fx[state.fx.length - 1]; state.fx.pop(); }
-  }
-
-  // --- respawn world content
-  while (state.orbs.length < ORB_COUNT) state.orbs.push(makeOrb());
-  while (state.shapes.length < SHAPE_COUNT) state.shapes.push(makeShape());
-  for (const t of state.tanks) {
-    if (!t.alive && t.isBot) {
-      const level = clamp(Math.round(rnd(1, 3 + state.time / 45)), 1, 30);
-      Object.assign(t, makeTank({ isBot: true, name: t.name, hue: rnd(0, 360) }));
-      t.isBot = true; t.level = level;
-      for (let i = 0; i < level - 1; i++) t.points++;
-      t.maxhp = maxHp(t); t.hp = t.maxhp;
-    }
-  }
-
-  // --- camera
-  const cam = state.cam;
-  const focus = p && p.alive ? p : { x: cam.x, y: cam.y, level: 20 };
-  cam.x = lerp(cam.x, focus.x, 1 - Math.pow(0.0001, dt));
-  cam.y = lerp(cam.y, focus.y, 1 - Math.pow(0.0001, dt));
-  const want = clamp(1.05 - Math.pow(focus.level, 0.55) * 0.055, 0.42, 1.05);
-  cam.zoom = lerp(cam.zoom, want, 1 - Math.pow(0.05, dt));
-  Sfx.listener(cam.x, cam.y, cam.zoom);
+function aimAngle() {
+  const w = worldFromScreen(state.mouse.x, state.mouse.y);
+  return Math.atan2(w.y - pred.y, w.x - pred.x);
 }
 
-function damageShape(s, dmg, by) {
-  s.hp -= dmg; s.flash = 1;
-  if (s.hp <= 0 && by && by.alive) addXp(by, s.kind.xp);
+function firing() {
+  return state.mouse.down || state.autofire || !!state.keys.Space;
+}
+
+// Predict own movement with the same numbers the server uses.
+function predict(dt) {
+  const me = state.me;
+  if (!me || !pred.ready) return;
+  const v = inputVector();
+  const max = Sim.moveSpeed(me.level, me.skills ? me.skills.speed : 0);
+  pred.vx += v.x * max * 5.2 * dt;
+  pred.vy += v.y * max * 5.2 * dt;
+  const fr = Math.pow(Sim.FRICTION, dt * 60);
+  pred.vx *= fr; pred.vy *= fr;
+  const sp = Math.hypot(pred.vx, pred.vy);
+  if (sp > max) { pred.vx = pred.vx / sp * max; pred.vy = pred.vy / sp * max; }
+  pred.x = clamp(pred.x + pred.vx * dt, 20, WORLD - 20);
+  pred.y = clamp(pred.y + pred.vy * dt, 20, WORLD - 20);
+}
+
+function sendInput() {
+  const v = inputVector();
+  send({ t: 'in', ix: +v.x.toFixed(3), iy: +v.y.toFixed(3), a: +aimAngle().toFixed(3),
+         f: firing(), hw: Math.round(VW / 2 / state.cam.zoom), hh: Math.round(VH / 2 / state.cam.zoom) });
 }
 
 // ---------------------------------------------------------------- rendering
@@ -620,61 +421,52 @@ function draw() {
   const vis = (e, pad = 0) => e.x + (e.r || 40) + pad > view.x0 && e.x - (e.r || 40) - pad < view.x1
                            && e.y + (e.r || 40) + pad > view.y0 && e.y - (e.r || 40) - pad < view.y1;
 
-  // grid
   const G = 64;
   ctx.strokeStyle = GRID; ctx.lineWidth = 1 / z; ctx.beginPath();
   for (let x = Math.floor(view.x0 / G) * G; x < view.x1; x += G) { ctx.moveTo(x, view.y0); ctx.lineTo(x, view.y1); }
   for (let y = Math.floor(view.y0 / G) * G; y < view.y1; y += G) { ctx.moveTo(view.x0, y); ctx.lineTo(view.x1, y); }
   ctx.stroke();
 
-  // out-of-bounds shading
-  ctx.fillStyle = 'rgba(200,40,60,0.13)';
+  ctx.fillStyle = 'rgba(200,40,60,0.10)';
   if (view.x0 < 0) ctx.fillRect(view.x0, view.y0, -view.x0, view.y1 - view.y0);
   if (view.y0 < 0) ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, -view.y0);
   if (view.x1 > WORLD) ctx.fillRect(WORLD, view.y0, view.x1 - WORLD, view.y1 - view.y0);
   if (view.y1 > WORLD) ctx.fillRect(view.x0, WORLD, view.x1 - view.x0, view.y1 - WORLD);
 
-  // orbs
-  for (const o of state.orbs) {
+  for (const o of frame.orbs) {
     if (!vis(o, 10)) continue;
-    const wob = 1 + Math.sin(state.time * 3 + o.ph) * 0.08;
-    ctx.fillStyle = `hsl(${o.hue} 75% 52%)`;
-    ctx.beginPath(); ctx.arc(o.x, o.y, o.r * wob, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsl(${o.hue} 80% 62%)`;
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, TAU); ctx.fill();
   }
 
-  // shapes
-  for (const s of state.shapes) {
+  for (const s of frame.shapes) {
     if (!vis(s, 10)) continue;
     ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.rot);
     ctx.beginPath();
-    for (let i = 0; i < s.kind.sides; i++) {
-      const a = (i / s.kind.sides) * TAU;
+    for (let i = 0; i < s.sides; i++) {
+      const a = (i / s.sides) * TAU;
       ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * s.r, Math.sin(a) * s.r);
     }
     ctx.closePath();
-    const light = 50 + s.flash * 32;
-    ctx.fillStyle = `hsl(${s.hue} 72% ${light}%)`;
+    ctx.fillStyle = `hsl(${s.hue} 72% 55%)`;
     ctx.fill();
-    ctx.lineWidth = 3 / 1; ctx.strokeStyle = `hsl(${s.hue} 60% ${light - 22}%)`; ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = `hsl(${s.hue} 60% 33%)`; ctx.stroke();
     ctx.restore();
     if (s.hp < s.maxhp) healthBar(s.x, s.y + s.r + 9, s.r * 1.5, s.hp / s.maxhp, 3);
   }
 
-  // bullets
-  for (const b of state.bullets) {
+  for (const b of frame.bullets) {
     if (!vis(b, 8)) continue;
-    ctx.fillStyle = `hsl(${b.hue} 80% 55%)`;
+    ctx.fillStyle = `hsl(${b.hue} 85% 66%)`;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
-    ctx.strokeStyle = `hsl(${b.hue} 70% 32%)`; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = `hsl(${b.hue} 70% 40%)`; ctx.lineWidth = 2; ctx.stroke();
   }
 
-  // tanks
-  for (const t of state.tanks) if (t.alive && vis(t, 60)) drawTank(t);
+  for (const t of frame.tanks) if (vis(t, 60)) drawTank(t);
 
-  // particles
   for (const f of state.fx) {
     ctx.globalAlpha = clamp(f.life, 0, 1);
-    ctx.fillStyle = `hsl(${f.hue} 78% 55%)`;
+    ctx.fillStyle = `hsl(${f.hue} 85% 66%)`;
     ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.4 + f.life), 0, TAU); ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -684,57 +476,50 @@ function draw() {
 }
 
 function drawTank(t) {
-  const r = radiusOf(t), tier = tierOf(t);
+  const r = Sim.radiusOf(t);
+  const tier = Sim.TIERS[clamp(t.tierIdx, 0, Sim.TIERS.length - 1)] || Sim.TIERS[0];
   ctx.save(); ctx.translate(t.x, t.y); ctx.rotate(t.angle);
-  // barrels
-  const back = t.recoil * 4;
+  const back = (t.recoil || 0) * 4;
   for (const b of tier.barrels) {
     const w = r * 0.66 * (b.w ?? 1), len = r * (1.35 + ((b.speed ?? 1) - 1) * 0.45) * (b.size ?? 1);
     ctx.save(); ctx.rotate(b.a);
-    ctx.fillStyle = '#8d95a4'; ctx.strokeStyle = '#5b616d'; ctx.lineWidth = 3;
+    ctx.fillStyle = '#9aa3b2'; ctx.strokeStyle = '#6e7684'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.rect(-back, -w / 2, len, w); ctx.fill(); ctx.stroke();
     ctx.restore();
   }
-  // body
-  const light = 54 + t.flash * 30;
   ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU);
-  ctx.fillStyle = t.invuln > 0 && ((state.time * 10) | 0) % 2 ? '#dfe6ef' : `hsl(${t.hue} 68% ${light}%)`;
+  ctx.fillStyle = t.invuln && ((state.time * 10) | 0) % 2 ? '#ffffff' : `hsl(${t.hue} 68% 58%)`;
   ctx.fill();
-  ctx.lineWidth = 4; ctx.strokeStyle = `hsl(${t.hue} 60% ${light - 28}%)`; ctx.stroke();
+  ctx.lineWidth = 4; ctx.strokeStyle = `hsl(${t.hue} 55% 34%)`; ctx.stroke();
   ctx.restore();
 
-  // name + bars
   ctx.font = '600 15px Segoe UI, system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,.9)';
-  const label = t.name;
-  ctx.strokeText(label, t.x, t.y - r - 16);
-  ctx.fillStyle = t === state.player ? '#0b6d8c' : INK;
-  ctx.fillText(label, t.x, t.y - r - 16);
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.55)';
+  ctx.strokeText(t.name, t.x, t.y - r - 16);
+  ctx.fillStyle = t.own ? '#ffffff' : '#dfe6f0';
+  ctx.fillText(t.name, t.x, t.y - r - 16);
   ctx.font = '500 11px Segoe UI, system-ui, sans-serif';
   ctx.strokeText(`Lv ${t.level} ${tier.name}`, t.x, t.y - r - 4);
-  ctx.fillStyle = 'rgba(0,0,0,.5)';
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
   ctx.fillText(`Lv ${t.level} ${tier.name}`, t.x, t.y - r - 4);
   if (t.hp < t.maxhp) healthBar(t.x, t.y + r + 11, r * 1.4, t.hp / t.maxhp, 5);
 }
 
 function healthBar(x, y, halfW, frac, h) {
-  ctx.fillStyle = 'rgba(0,0,0,.22)';
+  ctx.fillStyle = 'rgba(0,0,0,.5)';
   ctx.beginPath(); ctx.roundRect(x - halfW, y, halfW * 2, h, h / 2); ctx.fill();
   ctx.fillStyle = frac > 0.4 ? '#45dd80' : frac > 0.18 ? '#ffc65a' : '#ff5a5a';
   ctx.beginPath(); ctx.roundRect(x - halfW, y, halfW * 2 * clamp(frac, 0, 1), h, h / 2); ctx.fill();
 }
 
 function drawMinimap() {
-  const S = MINI;
+  const S = MINI, k = S / (WORLD / 25);
   mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   mctx.clearRect(0, 0, S, S);
-  const k = S / WORLD;
-  for (const t of state.tanks) {
-    if (!t.alive) continue;
-    const me = t === state.player;
-    mctx.fillStyle = me ? '#0b93c4' : `hsl(${t.hue} 65% 45%)`;
-    mctx.beginPath(); mctx.arc(t.x * k, t.y * k, me ? 3.4 : 2, 0, TAU); mctx.fill();
+  for (const [x, y, me, hue] of state.dots) {
+    mctx.fillStyle = me ? '#57d2ff' : `hsl(${hue} 70% 60%)`;
+    mctx.beginPath(); mctx.arc(x * k, y * k, me ? 3.4 : 2, 0, TAU); mctx.fill();
   }
 }
 
@@ -744,195 +529,200 @@ const ui = {
   name: el('name'), sub: el('sub'), xpfill: el('xpfill'), hpfill: el('hpfill'),
   score: el('score'), lb: el('lb'), up: el('upgrades'), ulist: el('ulist'),
   uhint: el('uhint'), overlay: el('overlay'), card: el('card'), guns: el('guns'),
+  link: el('link'), pop: el('pop'),
 };
 
-// Upgrade rows are built once, then only their pips change.
-const rows = SKILLS.map((s, i) => {
-  const d = document.createElement('button');
-  d.className = 'u'; d.type = 'button';
-  d.innerHTML = `<kbd>${i + 1}</kbd><span class="label">${s.label}</span>` +
-                `<span class="meter"><i></i></span>`;
-  d.onclick = () => { spend(state.player, s.key); syncUI(); };
-  ui.ulist.appendChild(d);
-  return { el: d, fill: d.querySelector('.meter i'), key: s.key };
-});
-
-function syncUI() {
-  const p = state.player;
-  if (!p) return;
-  ui.name.textContent = p.name;
-  ui.sub.textContent = `Lv ${p.level} \u00b7 ${tierOf(p).name}`;
-  const need = xpForLevel(p.level);
-  ui.xpfill.style.width = (p.level >= MAX_LEVEL ? 100 : (p.xp / need) * 100) + '%';
-  ui.hpfill.style.width = clamp(p.hp / p.maxhp, 0, 1) * 100 + '%';
-  ui.score.textContent = Math.floor(p.score).toLocaleString();
-  // The upgrade panel only exists when there is something to spend.
-  ui.up.classList.toggle('show', p.points > 0);
-  if (gunChips.length !== unlocked(p).length) syncWeapons();
-  if (p.points > 0) {
-    ui.uhint.textContent = p.points === 1 ? '1 point' : `${p.points} points`;
-    for (const r of rows) {
-      const n = p.skills[r.key];
-      r.fill.style.width = (n / SKILL_MAX) * 100 + '%';
-      r.el.disabled = n >= SKILL_MAX;
-    }
-  }
+let rows = [];
+function buildRows() {
+  ui.ulist.innerHTML = '';
+  rows = state.skills.map((s, i) => {
+    const d = document.createElement('button');
+    d.className = 'u'; d.type = 'button';
+    d.innerHTML = `<kbd>${i + 1}</kbd><span class="label">${s.label}</span><span class="meter"><i></i></span>`;
+    d.onclick = () => spend(s.key);
+    ui.ulist.appendChild(d);
+    return { el: d, fill: d.querySelector('.meter i'), key: s.key, max: s.max };
+  });
+  gunChips = [];
 }
 
-// The gun strip is rebuilt only when a new gun unlocks; otherwise just restyled.
+function spend(key) {
+  if (net.offline) net.offline.world.spend(net.offline.me, key);
+  else send({ t: 'up', k: key });
+}
+
 let gunChips = [];
 function syncWeapons() {
-  const p = state.player;
-  if (!p) return;
-  const list = unlocked(p);
-  if (gunChips.length !== list.length) {
+  const me = state.me;
+  if (!me) return;
+  const names = state.tiers.slice(0, me.guns || 1).map(t => t.name);
+  if (gunChips.length !== names.length) {
     ui.guns.innerHTML = '';
-    gunChips = list.map((tr, i) => {
+    gunChips = names.map((nm, i) => {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'gun';
-      b.innerHTML = `<span>${tr.name}</span>`;
-      b.onclick = () => { if (p.weapon !== i) { p.weapon = i; Sfx.weapon(); syncWeapons(); } };
+      b.innerHTML = `<span>${nm}</span>`;
+      b.onclick = () => selectWeapon(i);
       ui.guns.appendChild(b);
       return b;
     });
   }
-  ui.guns.classList.toggle('show', list.length > 1);
-  gunChips.forEach((b, i) => b.classList.toggle('on', i === p.weapon));
+  ui.guns.classList.toggle('show', names.length > 1);
+  gunChips.forEach((b, i) => b.classList.toggle('on', i === me.weapon));
+}
+
+function selectWeapon(i) {
+  if (net.offline) net.offline.world.selectWeapon(net.offline.me, i);
+  else send({ t: 'w', i });
+}
+
+function cycleWeapon(d) {
+  const me = state.me;
+  if (!me || (me.guns || 1) < 2) return;
+  selectWeapon(((me.weapon + d) % me.guns + me.guns) % me.guns);
+}
+
+function syncUI() {
+  const me = state.me;
+  if (!me) return;
+  ui.name.textContent = state.name;
+  const tier = state.tiers[clamp(me.weapon, 0, state.tiers.length - 1)];
+  ui.sub.textContent = `Lv ${me.level} · ${tier ? tier.name : ''}`;
+  ui.xpfill.style.width = (me.level >= Sim.MAX_LEVEL ? 100 : (me.xp / me.need) * 100) + '%';
+  ui.hpfill.style.width = clamp(me.hp / me.maxhp, 0, 1) * 100 + '%';
+  ui.score.textContent = Math.floor(me.score).toLocaleString();
+  ui.pop.textContent = state.pop.humans > 1
+    ? `${state.pop.humans} players · ${state.pop.bots} bots`
+    : `${state.pop.bots} bots`;
+  ui.up.classList.toggle('show', me.points > 0);
+  if (me.points > 0) {
+    ui.uhint.textContent = me.points === 1 ? '1 point' : `${me.points} points`;
+    for (const r of rows) {
+      const n = me.skills ? me.skills[r.key] || 0 : 0;
+      r.fill.style.width = (n / r.max) * 100 + '%';
+      r.el.disabled = n >= r.max;
+    }
+  }
+  if (gunChips.length !== (me.guns || 1)) syncWeapons();
+  else gunChips.forEach((b, i) => b.classList.toggle('on', i === me.weapon));
 }
 
 function syncLeaderboard() {
-  const top = state.tanks.filter(t => t.alive).sort((a, b) => b.score - a.score).slice(0, 6);
-  ui.lb.innerHTML = top.map((t, i) =>
-    `<li class="${t === state.player ? 'me' : ''}"><b>${i + 1}</b><span>${escapeHtml(t.name)}</span><em>${Math.floor(t.score).toLocaleString()}</em></li>`
-  ).join('');
+  ui.lb.innerHTML = state.lb.map((t, i) =>
+    `<li class="${t.id === net.id ? 'me' : ''}"><b>${i + 1}</b><span>${escapeHtml(t.name)}</span>` +
+    `<em>${t.score.toLocaleString()}</em></li>`).join('');
 }
-function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
 
 // ---------------------------------------------------------------- run lifecycle
-// Pick the candidate point furthest from any living tank.
-function safeSpawn() {
-  let best = { x: WORLD / 2, y: WORLD / 2 }, bestD = -1;
-  for (let i = 0; i < 24; i++) {
-    const c = { x: rnd(400, WORLD - 400), y: rnd(400, WORLD - 400) };
-    let d = Infinity;
-    for (const t of state.tanks) if (t.alive) d = Math.min(d, dist2(c, t));
-    if (d > bestD) { bestD = d; best = c; }
-  }
-  return best;
-}
-
 function startRun(name) {
-  state.orbs.length = state.shapes.length = state.tanks.length = 0;
-  state.bullets.length = state.fx.length = 0;
-  state.time = 0; state.startedAt = performance.now();
-  for (let i = 0; i < ORB_COUNT; i++) state.orbs.push(makeOrb());
-  for (let i = 0; i < SHAPE_COUNT; i++) state.shapes.push(makeShape());
-
-  const p = makeTank({ name: name || 'you', x: WORLD / 2, y: WORLD / 2, hue: 198 });
-  state.player = p;
-  state.tanks.push(p);
-
-  const names = shuffle(BOT_NAMES.slice());
-  for (let i = 0; i < BOT_COUNT; i++) {
-    const b = makeTank({ isBot: true, name: names[i % names.length] + (i >= names.length ? i : '') });
-    const lv = clamp(Math.round(rnd(1, 5)), 1, 8);
-    b.level = lv;
-    for (let j = 0; j < lv - 1; j++) b.points++;
-    b.maxhp = maxHp(b); b.hp = b.maxhp;
-    state.tanks.push(b);
-  }
-  const spot = safeSpawn();          // bots exist by now, so place the player clear of them
-  p.x = spot.x; p.y = spot.y; p.invuln = 3;
-  state.cam.x = p.x; state.cam.y = p.y; state.cam.zoom = 1;
-  gunChips = [];
-  syncWeapons();
-  state.running = true;
+  state.name = name;
+  state.fx.length = 0;
+  net.snaps.length = 0; net.orbs = [];
+  state.me = null; state.lb = []; state.dots = [];
+  state.mode = 'playing';
   Sfx.start();
   ui.overlay.classList.add('hidden');
-  syncUI();
+
+  if (net.ws && net.ws.readyState === 1) { net.offline = null; send({ t: 'join', name }); }
+  else if (state.link === 'connecting' || state.link === 'idle') {
+    connect(() => {
+      if (net.ws && net.ws.readyState === 1) { net.offline = null; send({ t: 'join', name }); }
+      else startLocal();
+    });
+  } else startLocal();
 }
 
-function endRun(killer) {
-  state.running = false;
-  const p = state.player;
-  const secs = Math.round((performance.now() - state.startedAt) / 1000);
-  const place = state.tanks.filter(t => t.score > p.score).length + 1;
+function endRun(byName) {
+  if (state.mode !== 'playing') return;
+  state.mode = 'dead';
+  state.killedBy = byName || null;
+  const me = state.me || { score: 0, level: 1, kills: 0, weapon: 0 };
+  const tier = state.tiers[clamp(me.weapon, 0, state.tiers.length - 1)];
   ui.card.innerHTML = `
     <h1>Rekt<span>.</span></h1>
-    <p class="sub">${killer ? 'Taken down by ' + escapeHtml(killer.name) : 'You were destroyed'}</p>
+    <p class="sub">${byName ? 'Taken down by ' + escapeHtml(byName) : 'You were destroyed'}</p>
     <p id="stats">
-      Score <b>${Math.floor(p.score).toLocaleString()}</b><br>
-      Level <b>${p.level}</b> &middot; ${tierOf(p).name}<br>
-      Kills <b>${p.kills}</b> &middot; Survived <b>${Math.floor(secs / 60)}m ${secs % 60}s</b><br>
-      Leaderboard place <b>#${place}</b>
+      Score <b>${Math.floor(me.score).toLocaleString()}</b><br>
+      Level <b>${me.level}</b> &middot; ${tier ? tier.name : ''}<br>
+      Kills <b>${me.kills || 0}</b>
     </p>
     <button id="again">Play again</button>
     <p class="help">Press <b>Enter</b> to respawn</p>`;
   ui.overlay.classList.remove('hidden');
-  el('again').onclick = () => startRun(p.name);
+  el('again').onclick = respawn;
 }
 
-// ---------------------------------------------------------------- input
+function respawn() {
+  state.fx.length = 0;
+  pred.ready = false;
+  if (net.offline) {
+    net.offline.world.respawn(net.offline.me);
+    enterPlaying();
+    return;
+  }
+  // Online the server decides when we are back, so ask and wait for the tank
+  // rather than clearing the screen on optimism.
+  state.pendingRespawn = 0;
+  send({ t: 'respawn' });
+  const btn = el('again');
+  if (btn) { btn.disabled = true; btn.textContent = 'Respawning…'; }
+}
+
+function enterPlaying() {
+  state.mode = 'playing';
+  state.pendingRespawn = null;
+  ui.overlay.classList.add('hidden');
+  Sfx.start();
+}
+
+// ---------------------------------------------------------------- input wiring
 canvas.addEventListener('mousemove', e => { state.mouse.x = e.clientX; state.mouse.y = e.clientY; });
 canvas.addEventListener('mousedown', e => { if (e.button === 0) state.mouse.down = true; });
 window.addEventListener('mouseup', () => { state.mouse.down = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
-  if (!state.running) return;
+  if (state.mode !== 'playing') return;
   e.preventDefault();
-  if (switchWeapon(state.player, e.deltaY > 0 ? 1 : -1)) { Sfx.weapon(); syncWeapons(); }
+  cycleWeapon(e.deltaY > 0 ? 1 : -1);
 }, { passive: false });
-canvas.addEventListener('touchstart', e => {
-  e.preventDefault(); const t = e.touches[0];
-  state.mouse.x = t.clientX; state.mouse.y = t.clientY; state.mouse.down = true;
-  if (state.player && state.player.alive) {
-    const w = worldFromScreen(t.clientX, t.clientY);
-    const d = Math.hypot(w.x - state.player.x, w.y - state.player.y) || 1;
-    state.player.ix = (w.x - state.player.x) / d; state.player.iy = (w.y - state.player.y) / d;
-  }
-}, { passive: false });
-canvas.addEventListener('touchmove', e => {
-  e.preventDefault(); const t = e.touches[0];
+
+function touchAim(t) {
   state.mouse.x = t.clientX; state.mouse.y = t.clientY;
+  const w = worldFromScreen(t.clientX, t.clientY);
+  const d = Math.hypot(w.x - pred.x, w.y - pred.y) || 1;
+  state.touch = { x: (w.x - pred.x) / d, y: (w.y - pred.y) / d };
+}
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); state.mouse.down = true; touchAim(e.touches[0]);
 }, { passive: false });
-canvas.addEventListener('touchend', e => { e.preventDefault(); state.mouse.down = false; if (state.player) { state.player.ix = state.player.iy = 0; } }, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); touchAim(e.touches[0]); }, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault(); state.mouse.down = false; state.touch = null;
+}, { passive: false });
 
 window.addEventListener('keydown', e => {
   state.keys[e.code] = true;
   if (e.code === 'Space') e.preventDefault();
-  if (!state.running) {
+  if (state.mode !== 'playing') {
     if (e.code === 'Enter') {
       const btn = el('again');
       if (btn) btn.click(); else tryPlay();
     }
     return;
   }
-  if (e.code === 'KeyE') { state.autofire = !state.autofire; }
-  if (e.code === 'KeyM') { setMuteLabel(Sfx.toggle()); }
-  if (e.code === 'KeyQ' || e.code === 'Tab') {
-    e.preventDefault();
-    if (switchWeapon(state.player, e.shiftKey ? -1 : 1)) { Sfx.weapon(); syncWeapons(); }
-  }
+  if (e.code === 'KeyE') state.autofire = !state.autofire;
+  if (e.code === 'KeyM') setMuteLabel(Sfx.toggle());
+  if (e.code === 'KeyQ' || e.code === 'Tab') { e.preventDefault(); cycleWeapon(e.shiftKey ? -1 : 1); }
   const n = e.code.match(/^Digit([1-9])$/);
-  if (n && +n[1] <= SKILLS.length) { spend(state.player, SKILLS[+n[1] - 1].key); syncUI(); }
+  if (n && +n[1] <= state.skills.length) spend(state.skills[+n[1] - 1].key);
 });
 window.addEventListener('keyup', e => { state.keys[e.code] = false; });
-window.addEventListener('blur', () => { state.keys = Object.create(null); state.mouse.down = false; });
-
-// ---------------------------------------------------------------- main loop
-let last = performance.now(), lbTimer = 0;
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  if (state.running) {
-    step(dt);
-    syncUI();
-    lbTimer -= dt;
-    if (lbTimer <= 0) { lbTimer = 0.35; syncLeaderboard(); }
-  }
-  draw();
-  requestAnimationFrame(frame);
-}
+window.addEventListener('blur', () => {
+  state.keys = Object.create(null); state.mouse.down = false; state.touch = null;
+});
 
 function setMuteLabel(m) {
   const b = el('mute');
@@ -952,9 +742,81 @@ function tryPlay() {
   startRun(v.name);
 }
 
+// ---------------------------------------------------------------- main loop
+let last = performance.now(), inputAcc = 0, lbAcc = 0;
+
+function frameLoop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  state.time += dt;
+
+  if (state.mode !== 'menu') {
+    if (net.offline) {
+      const w = net.offline.world, me = net.offline.me;
+      const v = inputVector();
+      me.ix = v.x; me.iy = v.y;
+      me.angle = aimAngle();
+      me.fire = firing();
+      w.step(dt);
+      w.recycleBots();
+      handleEvents(w.events, ev => ev.by === me.id, ev => ev.on === me.id);
+      w.events.length = 0;
+      if (me.alive) { pred.x = me.x; pred.y = me.y; }
+      buildFrameLocal();
+    } else {
+      predict(dt);
+      inputAcc += dt;
+      if (inputAcc >= 1 / INPUT_HZ) { inputAcc = 0; sendInput(); }
+      buildFrameOnline();
+    }
+
+    // Camera and the zoom that makes the arena open up as you grow.
+    const lvl = state.me ? state.me.level : 1;
+    state.cam.x = lerp(state.cam.x, pred.x, 1 - Math.pow(0.0001, dt));
+    state.cam.y = lerp(state.cam.y, pred.y, 1 - Math.pow(0.0001, dt));
+    const want = clamp(1.05 - Math.pow(lvl, 0.55) * 0.055, 0.42, 1.05);
+    state.cam.zoom = lerp(state.cam.zoom, want, 1 - Math.pow(0.05, dt));
+    Sfx.listener(state.cam.x, state.cam.y, state.cam.zoom);
+
+    // Pull nearby orbs in visually between server updates so collection reads
+    // as smooth rather than stepping at the orb update rate.
+    if (!net.offline && state.mode === 'playing') {
+      for (const o of frame.orbs) {
+        const dx = pred.x - o.x, dy = pred.y - o.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < Sim.MAGNET * Sim.MAGNET) {
+          const d = Math.sqrt(d2) || 1;
+          o.x += dx / d * Sim.MAGNET_PULL * dt; o.y += dy / d * Sim.MAGNET_PULL * dt;
+        }
+      }
+    }
+
+    if (state.mode === 'dead' && state.pendingRespawn !== null) {
+      state.pendingRespawn += dt;
+      if (state.pendingRespawn > 0.5) { state.pendingRespawn = 0; send({ t: 'respawn' }); }
+    }
+    syncUI();
+    lbAcc += dt;
+    if (lbAcc >= 0.3) { lbAcc = 0; syncLeaderboard(); }
+  }
+
+  for (let i = state.fx.length - 1; i >= 0; i--) {
+    const f = state.fx[i];
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    f.vx *= Math.pow(0.05, dt); f.vy *= Math.pow(0.05, dt);
+    f.life -= dt / f.max;
+    if (f.life <= 0) { state.fx[i] = state.fx[state.fx.length - 1]; state.fx.pop(); }
+  }
+
+  draw();
+  requestAnimationFrame(frameLoop);
+}
+
 resize();
+buildRows();
 el('play').onclick = tryPlay;
 el('nick').addEventListener('input', () => { el('nameerr').textContent = ''; });
 el('mute').onclick = () => { Sfx.init(); setMuteLabel(Sfx.toggle()); };
-requestAnimationFrame(frame);
+connect();                       // warm the socket so the menu can show the count
+requestAnimationFrame(frameLoop);
 })();

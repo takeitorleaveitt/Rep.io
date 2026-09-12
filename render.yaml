@@ -1,0 +1,14 @@
+# Render blueprint. Point Render at this repo and it configures the service
+# itself; the same three settings can be entered by hand in the dashboard.
+services:
+  - type: web
+    name: rep-io
+    runtime: node
+    plan: free
+    buildCommand: yarn
+    startCommand: yarn start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

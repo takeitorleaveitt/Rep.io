@@ -1,12 +1,34 @@
 # Rep.io
 
-A browser arena shooter in the spirit of **diep.io**, **agar.io** and **slither.io** —
-one canvas, no build step, no server, 22 bots that actually fight back.
+A multiplayer browser arena shooter in the spirit of **diep.io**, **agar.io** and
+**slither.io** — real players and bots in one arena, ten guns, no build step.
 
 ## Play
 
-Open `index.html` in a browser. That's it. (Or serve the folder:
-`python3 -m http.server` and visit `http://localhost:8000`.)
+**Multiplayer:** `yarn && yarn start`, then open `http://localhost:3000`. The one
+process serves the page and runs the authoritative game server.
+
+**Solo:** open `index.html` directly. With no server to talk to, the same
+simulation runs in the browser and you play against bots alone. The game also
+falls back to this automatically if the server is unreachable or drops
+mid-match, so a sleeping host never means a broken page.
+
+## Deploying to Render
+
+Push the repo, create a **Web Service** (not a Static Site — a static host
+cannot run WebSockets) and use:
+
+| Setting | Value |
+| --- | --- |
+| Build Command | `yarn` |
+| Start Command | `yarn start` |
+| Health Check Path | `/healthz` |
+
+No environment variables are needed; the server reads Render's `PORT` itself.
+`render.yaml` in the repo carries the same settings as a blueprint if you would
+rather let Render configure the service. Note that the free plan sleeps after
+~15 minutes idle, so the next visit waits ~50s for a cold start and anyone
+connected at the time is disconnected.
 
 ## Controls
 
@@ -22,6 +44,26 @@ Open `index.html` in a browser. That's it. (Or serve the folder:
 | `Enter` | Respawn on the death screen |
 
 Touch works too: drag anywhere to move and fire toward your finger.
+
+## Multiplayer
+
+- **You join the busiest arena with room in it**, so two or nine people online
+  end up in the same game rather than sitting in separate empty ones. Rooms hold
+  16 humans and a new one only opens when they are all full.
+- **Bots backfill toward 35% bots / 65% humans.** Nine humans gives 36% bots,
+  twelve gives 33%. Below about nine that ratio alone would leave a near-empty
+  arena, so a floor of ten tanks takes over instead — a solo player gets nine
+  bots rather than an empty map.
+- **Bots are levelled against the people in the room**, not against how long the
+  server has been up, and each one ramps from soft to full strength over its own
+  first four minutes alive. A room that has been running for hours therefore
+  still greets newcomers with a mix of fresh and dangerous opponents instead of
+  a wall of maximum-level veterans.
+- The server is authoritative: it owns the simulation, ticks at 30Hz, and sends
+  each client only what that client can see — entities at 20Hz, orbs at 6Hz,
+  and sound events only to players in earshot. The client predicts its own tank
+  so movement is immediate, interpolates everyone else, and dead-reckons bullets
+  from their velocity.
 
 ## How it plays
 
@@ -39,9 +81,12 @@ Touch works too: drag anywhere to move and fire toward your finger.
   Railgun is a single devastating long-range shot on a slow reload, the Overlord is
   a seven-barrel all-rounder, and the old Sniper and Spreadshot stay genuinely
   useful. Swapping costs a short reload so it is not a free burst.
-- **Spend points on a build.** Seven stats, nine ranks each: reload, damage, bullet
-  health, bullet speed, max health, regen, move speed. Body damage is a flat stat
-  that scales with your level, not something you spend on.
+- **Spend points on a build.** Seven stats: reload, damage, bullet health, bullet
+  speed, max health and regen go to nine ranks, and move speed to ten. Body damage
+  is a flat stat that scales with your level, not something you spend on.
+- **Levelling steepens after 25.** Levels 1-25 cost what they always did; past
+  that each one costs progressively more, taking a full run to 75 from 53k XP to
+  81k.
 - **Kills pay.** A dead tank scatters a chunk of its score as orbs and hands the
   killer a share of it directly — dive into a fight and the field is briefly a feast.
 - **Bots have opinions.** They hunt food, pick on tanks they can beat, lead their
@@ -54,10 +99,14 @@ Touch works too: drag anywhere to move and fire toward your finger.
 ## Layout
 
 ```
-index.html    markup + HUD
-style.css     UI chrome
-src/audio.js  procedural sound — synthesised at runtime, no audio files
-src/game.js   simulation, AI, rendering — everything else
+index.html        markup + HUD
+style.css         UI chrome
+src/sim.js        the simulation — world, bots, collisions. Runs under Node on
+                  the server and in the browser for solo play
+src/audio.js      procedural sound — synthesised at runtime, no audio files
+src/game.js       client: input, netcode, prediction, rendering
+server/index.js   static files + authoritative WebSocket server, one process
+render.yaml       Render blueprint
 ```
 
 ## Hit registration

@@ -1,15 +1,15 @@
-/* Rep.io — deliberately single-theme: a white arena on a black grid, same on
-   both hosts. The UI stays out of the way; the arena is the interface. */
+/* Rep.io — deliberately single-theme: an arcade screen, dark on both hosts.
+   The UI stays out of the way; the arena is the interface. */
 :root {
-  --bg:     #ffffff;
-  --ink:    #171a21;
-  --dim:    rgba(23, 26, 33, 0.52);
-  --accent: #0b93c4;
-  --xp:     #7b3fe4;
-  --hp:     #17a34a;
-  --panel:  rgba(255, 255, 255, 0.82);
-  --line:   rgba(23, 26, 33, 0.16);
-  --shadow: 0 1px 2px rgba(255, 255, 255, .95);
+  --bg:     #14161c;
+  --ink:    #e8edf4;
+  --dim:    rgba(232, 237, 244, 0.48);
+  --accent: #57d2ff;
+  --xp:     #a273ff;
+  --hp:     #37d67a;
+  --panel:  rgba(20, 23, 30, 0.78);
+  --line:   rgba(255, 255, 255, 0.13);
+  --shadow: 0 1px 3px rgba(0, 0, 0, .85);
 }
 * { box-sizing: border-box; }
 html, body {
@@ -25,10 +25,11 @@ html, body {
 #hud { position: absolute; left: 18px; bottom: 16px; width: 220px; text-shadow: var(--shadow); }
 #name  { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
 #sub   { font-size: 12px; color: var(--dim); margin-bottom: 7px; }
-#hud .bar { height: 6px; border-radius: 3px; background: rgba(23,26,33,.14); margin-bottom: 4px; overflow: hidden; }
+#hud .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.11); margin-bottom: 4px; overflow: hidden; }
 #hud .bar > i { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .1s linear; }
 #xpfill { background: var(--xp); }
 #hpfill { background: var(--hp); }
+#pop { margin-top: 2px; font-size: 11px; color: var(--dim); }
 #score { margin-top: 6px; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 
 /* ---- Upgrades: hidden until you actually have a point to spend. ---- */
@@ -42,11 +43,11 @@ html, body {
   color: var(--ink); font: inherit; font-size: 12px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
 }
-.u:hover { background: #e4f4fb; border-color: var(--accent); }
+.u:hover { background: rgba(87,210,255,.16); border-color: var(--accent); }
 .u:disabled { opacity: .35; cursor: default; }
 .u kbd { font: 11px/1 ui-monospace, monospace; color: var(--dim); }
 .u .label { flex: 1; }
-.u .meter { width: 46px; height: 4px; border-radius: 2px; background: rgba(23,26,33,.15); overflow: hidden; }
+.u .meter { width: 46px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.14); overflow: hidden; }
 .u .meter > i { display: block; height: 100%; width: 0; background: var(--accent); }
 
 /* ---- Leaderboard: a bare list. ---- */
@@ -77,12 +78,12 @@ html, body {
   border-radius: 999px;
 }
 .gun:hover { color: var(--ink); border-color: var(--accent); }
-.gun.on { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.gun.on { color: #06202b; background: var(--accent); border-color: var(--accent); font-weight: 600; }
 
 /* ---- Menu / death card ---- */
 #overlay {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  padding: 16px; background: rgba(248, 250, 252, .95);
+  padding: 16px; background: rgba(12, 14, 19, .93);
 }
 #overlay.hidden { display: none; }
 #card { width: 100%; max-width: 320px; text-align: center; }
@@ -91,14 +92,14 @@ html, body {
 #card p.sub { margin: 2px 0 20px; color: var(--dim); font-size: 13px; }
 #card input {
   width: 100%; padding: 11px; margin: 0; font: inherit; font-size: 15px; text-align: center;
-  color: var(--ink); background: #fff; border: 1px solid var(--line);
+  color: var(--ink); background: rgba(255,255,255,.06); border: 1px solid var(--line);
   border-radius: 7px; outline: none;
 }
 #card input:focus { border-color: var(--accent); }
-#nameerr { min-height: 17px; margin: 5px 0 6px; font-size: 12px; color: #c92a2a; }
+#nameerr { min-height: 17px; margin: 5px 0 6px; font-size: 12px; color: #ff7a7a; }
 #card button {
   width: 100%; padding: 12px; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer;
-  color: #fff; background: var(--accent); border: 0; border-radius: 7px;
+  color: #06202b; background: var(--accent); border: 0; border-radius: 7px;
 }
 #card button:hover { filter: brightness(1.08); }
 #card .help { margin: 18px 0 0; font-size: 12px; line-height: 1.9; color: var(--dim); }
@@ -108,7 +109,7 @@ html, body {
   color: var(--dim); background: none; border: 1px solid var(--line);
 }
 #card button.ghost:hover { color: var(--ink); filter: none; }
-#card button.ghost.off { color: #c05621; }
+#card button.ghost.off { color: #ff9a7a; }
 #stats { margin: 0 0 18px; font-size: 13px; line-height: 2; color: var(--dim); }
 #stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
 
@@ -121,3 +122,9 @@ html, body {
   #mini { width: 86px; height: 86px; right: 12px; bottom: 12px; }
   #upgrades { width: 172px; left: 12px; top: 12px; }
 }
+
+/* ---- Connection state, shown on the menu only. ---- */
+.link { min-height: 16px; margin: 0 0 14px; font-size: 12px; color: var(--dim); }
+.link.online { color: var(--hp); }
+.link.connecting { color: var(--dim); }
+.link.offline { color: #ffb066; }
