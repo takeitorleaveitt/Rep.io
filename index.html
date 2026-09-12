@@ -9,41 +9,39 @@
 <body>
 <canvas id="game"></canvas>
 
-<div id="hud" class="panel">
+<div id="hud">
   <div id="name">you</div>
-  <div class="row"><span>Lv <b id="lvl">1</b> &middot; <span id="tier">Scout</span></span><span id="xptext">0 / 20</span></div>
+  <div id="sub">Lv 1 &middot; Scout</div>
   <div class="bar"><i id="xpfill"></i></div>
-  <div class="row"><span>Health</span><span id="hptext">52 / 52</span></div>
   <div class="bar"><i id="hpfill"></i></div>
-  <div class="row"><span>Score</span><span id="score">0</span></div>
+  <div id="score">0</div>
 </div>
 
-<div id="upgrades" class="panel">
-  <h3>Upgrades &middot; <span id="points">0</span> pts</h3>
+<div id="upgrades">
+  <div id="uhint">1 point</div>
   <div id="ulist"></div>
 </div>
 
-<div id="leaderboard" class="panel">
-  <h3>Leaderboard</h3>
-  <ol id="lb"></ol>
-</div>
+<ol id="lb"></ol>
 
-<div id="minimap" class="panel"><canvas id="mini"></canvas></div>
+<canvas id="mini"></canvas>
 
 <div id="overlay">
-  <div id="card" class="panel">
+  <div id="card">
     <h1>Rep<span>.io</span></h1>
     <p class="sub">Eat, shoot, level up, take the top spot.</p>
-    <input id="nick" maxlength="14" placeholder="nickname" autocomplete="off">
+    <input id="nick" maxlength="17" placeholder="nickname" autocomplete="off" spellcheck="false">
+    <p id="nameerr"></p>
     <button id="play">Play</button>
     <p class="help">
-      <b>WASD</b> / arrows to move &middot; <b>mouse</b> to aim<br>
-      <b>Click</b> or <b>space</b> to shoot &middot; <b>E</b> toggles autofire<br>
-      <b>1–8</b> or click to spend upgrade points
+      <b>WASD</b> move &middot; <b>mouse</b> aim &middot; <b>click</b> shoot<br>
+      <b>E</b> autofire &middot; <b>1&ndash;8</b> upgrades &middot; <b>M</b> mute
     </p>
+    <button id="mute" class="ghost">Sound on</button>
   </div>
 </div>
 
+<script src="src/audio.js"></script>
 <script src="src/game.js"></script>
 </body>
 </html>

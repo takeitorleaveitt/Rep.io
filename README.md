@@ -16,6 +16,7 @@ Open `index.html` in a browser. That's it. (Or serve the folder:
 | Mouse | Aim |
 | Left click / `Space` | Shoot |
 | `E` | Toggle autofire |
+| `M` | Mute / unmute |
 | `1`–`8` (or click the panel) | Spend an upgrade point |
 | `Enter` | Respawn on the death screen |
 
@@ -34,13 +35,34 @@ Touch works too: drag anywhere to move and fire toward your finger.
 - **Kills pay.** A dead tank scatters a chunk of its score as orbs and hands the
   killer a share of it directly — dive into a fight and the field is briefly a feast.
 - **Bots have opinions.** They hunt food, pick on tanks they can beat, lead their
-  shots, keep stand-off range, and run when they're hurt and outgunned. They
-  respawn stronger as the run goes on.
+  shots, keep stand-off range, and run when they're hurt and outgunned.
+- **Bots start soft.** For the first few minutes of a run they have thinner hulls,
+  weaker shots, slower reloads and worse aim, all ramping to full strength over
+  four minutes — so the early game is about farming and the late game is the fight.
+  They also leave freshly-spawned tanks alone instead of spawn-camping.
 
 ## Layout
 
 ```
 index.html    markup + HUD
 style.css     UI chrome
+src/audio.js  procedural sound — synthesised at runtime, no audio files
 src/game.js   simulation, AI, rendering — everything else
 ```
+
+## Sound
+
+Every sound is synthesised in the Web Audio API at runtime, so the game ships
+no audio files and works offline. Voices run through a compressor and a short
+procedural convolution reverb; each one is panned and attenuated by its distance
+from the camera, so a firefight across the map reads as distant rather than loud.
+Per-emitter retrigger limits keep a dozen bots firing at once from turning into
+mush. Orb pickups walk up a pentatonic scale while you keep collecting, and
+reset when you stop.
+
+## Nicknames
+
+Two to seventeen characters, and a profanity filter blocks slurs and swearing —
+including leetspeak and padding, so `sh1t` and `f.u.c.k` are caught. The filter
+uses a two-tier blocklist so real nicknames like `Bassist` and `Cocktail` still
+work.

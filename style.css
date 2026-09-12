@@ -1,80 +1,106 @@
+/* Rep.io — deliberately single-theme: an arcade screen, dark on both hosts.
+   The UI stays out of the way; the arena is the interface. */
 :root {
-  --bg: #14161c;
-  --grid: #1c1f27;
-  --ui: rgba(12, 14, 18, 0.72);
-  --text: #e8edf4;
+  --bg:     #14161c;
+  --ink:    #e8edf4;
+  --dim:    rgba(232, 237, 244, 0.45);
   --accent: #57d2ff;
+  --xp:     #a273ff;
+  --hp:     #37d67a;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .8);
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0; height: 100%; overflow: hidden;
-  background: var(--bg); color: var(--text);
+  background: var(--bg); color: var(--ink);
   font: 14px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif;
   user-select: none; -webkit-user-select: none;
 }
 #game { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: crosshair; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.panel {
-  position: absolute; background: var(--ui); border: 1px solid #2c313d;
-  border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px);
+/* ---- HUD: no panel, no labels. Name, tier, two bars, one number. ---- */
+#hud { position: absolute; left: 18px; bottom: 16px; width: 220px; text-shadow: var(--shadow); }
+#name  { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+#sub   { font-size: 12px; color: var(--dim); margin-bottom: 7px; }
+#hud .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.10); margin-bottom: 4px; overflow: hidden; }
+#hud .bar > i { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .1s linear; }
+#xpfill { background: var(--xp); }
+#hpfill { background: var(--hp); }
+#score { margin-top: 6px; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+
+/* ---- Upgrades: hidden until you actually have a point to spend. ---- */
+#upgrades { position: absolute; left: 18px; top: 18px; width: 206px; display: none; }
+#upgrades.show { display: block; }
+#uhint { font-size: 11px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; text-shadow: var(--shadow); }
+#ulist { display: flex; flex-direction: column; gap: 3px; }
+.u {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 8px; cursor: pointer; text-align: left;
+  color: var(--ink); font: inherit; font-size: 12px;
+  background: rgba(20, 23, 30, .72); border: 0; border-radius: 5px;
+}
+.u:hover { background: rgba(87, 210, 255, .18); }
+.u:disabled { opacity: .35; cursor: default; }
+.u kbd { font: 11px/1 ui-monospace, monospace; color: var(--dim); }
+.u .label { flex: 1; }
+.u .meter { width: 46px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; }
+.u .meter > i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+/* ---- Leaderboard: a bare list. ---- */
+#lb {
+  position: absolute; right: 18px; top: 18px; width: 168px; margin: 0; padding: 0;
+  list-style: none; font-size: 12px; text-shadow: var(--shadow);
+}
+#lb li { display: flex; gap: 7px; padding: 2px 0; color: var(--dim); }
+#lb li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#lb li em { font-style: normal; font-variant-numeric: tabular-nums; }
+#lb li.me { color: var(--accent); font-weight: 600; }
+#lb li b { width: 12px; font-weight: 400; opacity: .6; }
+
+#mini {
+  position: absolute; right: 18px; bottom: 16px; width: 124px; height: 124px;
+  border: 1px solid rgba(255, 255, 255, .12); border-radius: 6px;
+  background: rgba(20, 23, 30, .72);
 }
 
-#hud { left: 12px; bottom: 12px; width: 260px; }
-#hud .bar { height: 12px; border-radius: 6px; background: #21252f; overflow: hidden; margin: 4px 0 8px; }
-#hud .bar > i { display: block; height: 100%; width: 0; transition: width .12s linear; }
-#xpfill { background: linear-gradient(90deg, #8f5cff, #d18bff); }
-#hpfill { background: linear-gradient(90deg, #37d67a, #9ff0b6); }
-#hud .row { display: flex; justify-content: space-between; font-size: 12px; opacity: .85; }
-#name { font-weight: 700; font-size: 15px; letter-spacing: .3px; }
-
-#leaderboard { right: 12px; top: 12px; width: 210px; }
-#leaderboard h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; opacity: .7; }
-#leaderboard ol { margin: 0; padding: 0; list-style: none; font-size: 12px; }
-#leaderboard li { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
-#leaderboard li b { width: 14px; opacity: .5; font-weight: 600; }
-#leaderboard li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#leaderboard li.me { color: var(--accent); }
-#leaderboard li em { font-style: normal; opacity: .6; }
-
-#upgrades { left: 12px; top: 12px; width: 250px; display: none; }
-#upgrades h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; opacity: .7; }
-#upgrades .u {
-  display: flex; align-items: center; gap: 8px; margin: 5px 0; cursor: pointer;
-  background: #1e222c; border: 1px solid #2c313d; border-radius: 7px; padding: 5px 8px;
-}
-#upgrades .u:hover { border-color: var(--accent); }
-#upgrades .u kbd {
-  background: #2a3040; border-radius: 4px; padding: 1px 5px; font: 11px monospace; opacity: .8;
-}
-#upgrades .u .label { flex: 1; font-size: 12px; }
-#upgrades .u .pips { display: flex; gap: 2px; }
-#upgrades .u .pips i { width: 5px; height: 11px; border-radius: 1px; background: #333a49; }
-#upgrades .u .pips i.on { background: var(--accent); }
-#points { color: var(--accent); font-weight: 700; }
-
-#minimap { right: 12px; bottom: 12px; width: 150px; height: 150px; padding: 0; overflow: hidden; }
-#minimap canvas { display: block; width: 100%; height: 100%; }
-
+/* ---- Menu / death card ---- */
 #overlay {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(circle at 50% 40%, rgba(30,36,50,.85), rgba(10,12,16,.95));
+  padding: 16px; background: rgba(12, 14, 19, .92);
 }
 #overlay.hidden { display: none; }
-#card { width: 380px; text-align: center; padding: 26px 28px; }
-#card h1 { margin: 0 0 2px; font-size: 40px; letter-spacing: -1px; }
+#card { width: 100%; max-width: 320px; text-align: center; }
+#card h1 { margin: 0; font-size: 42px; font-weight: 800; letter-spacing: -1.5px; }
 #card h1 span { color: var(--accent); }
-#card p.sub { margin: 0 0 18px; opacity: .6; font-size: 13px; }
+#card p.sub { margin: 2px 0 20px; color: var(--dim); font-size: 13px; }
 #card input {
-  width: 100%; padding: 10px 12px; margin-bottom: 10px; font-size: 15px; text-align: center;
-  color: var(--text); background: #1b1f28; border: 1px solid #2c313d; border-radius: 8px; outline: none;
+  width: 100%; padding: 11px; margin: 0; font: inherit; font-size: 15px; text-align: center;
+  color: var(--ink); background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 7px; outline: none;
 }
 #card input:focus { border-color: var(--accent); }
+#nameerr { min-height: 17px; margin: 5px 0 6px; font-size: 12px; color: #ff7a7a; }
 #card button {
-  width: 100%; padding: 11px; font-size: 15px; font-weight: 700; cursor: pointer;
-  color: #06202b; background: var(--accent); border: 0; border-radius: 8px;
+  width: 100%; padding: 12px; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer;
+  color: #06202b; background: var(--accent); border: 0; border-radius: 7px;
 }
-#card button:hover { filter: brightness(1.1); }
-#card .help { margin-top: 16px; font-size: 12px; opacity: .55; line-height: 1.8; }
-#card .help b { opacity: .9; }
-#stats { margin: 0 0 16px; font-size: 13px; opacity: .8; line-height: 1.9; }
-#stats b { color: var(--accent); }
+#card button:hover { filter: brightness(1.08); }
+#card .help { margin: 18px 0 0; font-size: 12px; line-height: 1.9; color: var(--dim); }
+#card .help b { color: var(--ink); font-weight: 600; }
+#card button.ghost {
+  width: auto; margin-top: 14px; padding: 5px 12px; font-size: 12px; font-weight: 500;
+  color: var(--dim); background: none; border: 1px solid rgba(255,255,255,.14);
+}
+#card button.ghost:hover { color: var(--ink); filter: none; }
+#card button.ghost.off { color: #ff9a7a; }
+#stats { margin: 0 0 18px; font-size: 13px; line-height: 2; color: var(--dim); }
+#stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 560px) {
+  #hud { width: 150px; left: 12px; bottom: 12px; }
+  #score { font-size: 21px; }
+  #lb { width: 132px; right: 12px; top: 12px; }
+  #mini { width: 86px; height: 86px; right: 12px; bottom: 12px; }
+  #upgrades { width: 172px; left: 12px; top: 12px; }
+}

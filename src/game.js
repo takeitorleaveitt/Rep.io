@@ -8,20 +8,23 @@
 const WORLD = 6400;            // square arena, 0..WORLD on both axes
 const ORB_COUNT = 1350;
 const SHAPE_COUNT = 190;
-const BOT_COUNT = 22;
+const BOT_COUNT = 12;
 const MAX_LEVEL = 45;
 const FRICTION = 0.87;
+const MAGNET = 150;            // pull radius, half of what it used to be
+const MAGNET_PULL = 140;       // 3.5x the old pull speed
 const TAU = Math.PI * 2;
+const MINI = 124;              // minimap edge length in CSS pixels
 
 const SKILLS = [
-  { key: 'reload',  label: 'Reload Speed'  },
-  { key: 'damage',  label: 'Bullet Damage' },
-  { key: 'pen',     label: 'Bullet Health' },
-  { key: 'bspeed',  label: 'Bullet Speed'  },
-  { key: 'body',    label: 'Body Damage'   },
-  { key: 'hp',      label: 'Max Health'    },
-  { key: 'regen',   label: 'Regeneration'  },
-  { key: 'speed',   label: 'Move Speed'    },
+  { key: 'reload', label: 'Reload'      },
+  { key: 'damage', label: 'Damage'      },
+  { key: 'pen',    label: 'Bullet HP'   },
+  { key: 'bspeed', label: 'Bullet Spd'  },
+  { key: 'body',   label: 'Body Damage' },
+  { key: 'hp',     label: 'Health'      },
+  { key: 'regen',  label: 'Regen'       },
+  { key: 'speed',  label: 'Move Speed'  },
 ];
 const SKILL_MAX = 8;
 
@@ -57,6 +60,54 @@ const pick = a => a[(Math.random() * a.length) | 0];
 const lerp = (a, b, t) => a + (b - a) * t;
 function angDiff(a, b) { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; }
 function xpForLevel(l) { return Math.round(16 * Math.pow(l, 1.35)); }
+
+// ---------------------------------------------------------------- nicknames
+const NAME_MIN = 2, NAME_MAX = 17;
+
+// Two tiers of blocklist. SUB matches anywhere in the name and covers slurs and
+// unambiguous profanity; WORD only matches a standalone run, which keeps real
+// nicknames like "Bassist" or "Cocktail" playable.
+const BLOCK_SUB = [
+  'nigg', 'nigr', 'nigga', 'negro', 'faggot', 'kike', 'chink', 'gook', 'wetback',
+  'beaner', 'raghead', 'tranny', 'retard', 'fuck', 'shit', 'bitch', 'cunt',
+  'asshole', 'arsehole', 'motherf', 'pussy', 'whore', 'slut', 'bastard', 'wanker',
+  'blowjob', 'dildo', 'jerkoff', 'rapist', 'nazi', 'hitler', 'pedo',
+];
+const BLOCK_WORD = [
+  'fag', 'spic', 'coon', 'paki', 'dyke', 'ass', 'arse', 'dick', 'cock', 'twat',
+  'prick', 'bollocks', 'penis', 'vagina', 'rape', 'kys', 'wank', 'damn', 'crap',
+];
+const LEET = { '0': 'o', '1': 'i', '2': 'z', '3': 'e', '4': 'a', '5': 's', '6': 'g',
+               '7': 't', '8': 'b', '9': 'g', '@': 'a', '$': 's', '!': 'i', '|': 'i',
+               '+': 't', '*': '', '.': '', '_': ' ', '-': ' ' };
+
+// Fold leetspeak and padding so "f.u.c.k" and "sh1tt" are caught too.
+function foldName(raw) {
+  const mapped = raw.toLowerCase().replace(/[0-9@$!|+*._-]/g, c => LEET[c] ?? c);
+  const spaced = mapped.replace(/[^a-z]+/g, ' ').trim();
+  const tight = spaced.replace(/\s+/g, '');
+  const squashed = tight.replace(/(.)\1+/g, '$1');   // fuuuck -> fuck
+  return { spaced, tight, squashed };
+}
+
+function validateName(raw) {
+  const name = raw.trim().replace(/\s+/g, ' ');
+  if (name.replace(/[^\p{L}\p{N}]/gu, '').length < NAME_MIN)
+    return { ok: false, error: `Nickname needs at least ${NAME_MIN} letters.` };
+  if (name.length > NAME_MAX)
+    return { ok: false, error: `Nickname can be at most ${NAME_MAX} characters.` };
+
+  const f = foldName(name);
+  for (const w of BLOCK_SUB)
+    if (f.tight.includes(w) || f.squashed.includes(w))
+      return { ok: false, error: 'Pick a nickname without that word in it.' };
+  for (const w of BLOCK_WORD) {
+    const re = new RegExp(`\\b${w}\\b`);
+    if (re.test(f.spaced) || f.tight === w || f.squashed === w)
+      return { ok: false, error: 'Pick a nickname without that word in it.' };
+  }
+  return { ok: true, name };
+}
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -106,12 +157,15 @@ function makeTank(opts = {}) {
 
 // ---------------------------------------------------------------- derived stats
 const radiusOf = t => 17 + Math.pow(t.level, 0.62) * 3.4;
-const maxHp    = t => 52 + (t.level - 1) * 7 + t.skills.hp * 22;
+// Bots start the round as pushovers and sharpen up over the first few minutes,
+// so the opening is about farming and the late game is about fighting.
+const botEdge = t => t.isBot ? clamp(0.45 + state.time / 240, 0.45, 1) : 1;
+const maxHp    = t => (52 + (t.level - 1) * 7 + t.skills.hp * 22) * (t.isBot ? lerp(0.55, 1, botEdge(t)) : 1);
 const regenOf  = t => 0.35 + t.skills.regen * 1.5 + maxHp(t) * 0.0007 * t.skills.regen;
 const speedOf  = t => (262 + t.skills.speed * 26) * (1 - Math.min(0.32, t.level * 0.004));
-const bodyDmg  = t => 8 + t.skills.body * 8 + t.level * 0.5;
-const fireRate = t => 0.42 / (1 + t.skills.reload * 0.16);
-const bulletDmg= t => 7 + t.skills.damage * 4.5 + t.level * 0.32;
+const bodyDmg  = t => (8 + t.skills.body * 8 + t.level * 0.5) * botEdge(t);
+const fireRate = t => (0.42 / (1 + t.skills.reload * 0.16)) * (t.isBot ? lerp(1.7, 1, botEdge(t)) : 1);
+const bulletDmg= t => (7 + t.skills.damage * 4.5 + t.level * 0.32) * botEdge(t);
 const bulletHp = t => 6 + t.skills.pen * 5 + t.level * 0.2;
 const bulletSpd= t => 560 + t.skills.bspeed * 55;
 
@@ -131,16 +185,20 @@ function addXp(t, amount) {
     const before = t.maxhp;
     t.maxhp = maxHp(t);
     t.hp += t.maxhp - before;
-    if (t === state.player) burst(t.x, t.y, t.hue, 26, 260);
+    if (t === state.player) { burst(t.x, t.y, t.hue, 26, 260); Sfx.levelUp(); }
   }
   if (t.level >= MAX_LEVEL) t.xp = Math.min(t.xp, xpForLevel(MAX_LEVEL));
 }
 
 function spend(t, key) {
-  if (t.points <= 0 || t.skills[key] >= SKILL_MAX) return false;
+  if (t.points <= 0 || t.skills[key] >= SKILL_MAX) {
+    if (t === state.player) Sfx.deny();
+    return false;
+  }
   t.points--; t.skills[key]++;
   const before = t.maxhp; t.maxhp = maxHp(t);
   t.hp += t.maxhp - before;
+  if (t === state.player) Sfx.upgrade();
   return true;
 }
 
@@ -150,7 +208,7 @@ function shoot(t) {
   const tier = tierOf(t);
   const r = radiusOf(t);
   for (const b of tier.barrels) {
-    const spread = (b.spread ?? 0.045) * (t.isBot ? 1.6 : 1);
+    const spread = (b.spread ?? 0.045) * (t.isBot ? 1.6 / botEdge(t) : 1);
     const ang = t.angle + b.a + rnd(-spread, spread);
     const speed = bulletSpd(t) * (b.speed ?? 1);
     const size = (5.4 + r * 0.15) * (b.size ?? 1) * (b.w ?? 1);
@@ -167,11 +225,13 @@ function shoot(t) {
   }
   t.recoil = 1;
   t.cool = fireRate(t) * (tier.barrels[0].rate ?? 1);
+  Sfx.shoot(t.x, t.y, tier.barrels[0].size ?? 1, t === state.player);
 }
 
 function hurt(target, dmg, from) {
   if (!target.alive || target.invuln > 0) return;
   target.hp -= dmg; target.flash = 1;
+  if (target === state.player && dmg > 2) Sfx.hurt();
   if (target.hp <= 0) kill(target, from);
 }
 
@@ -190,8 +250,9 @@ function kill(t, by) {
   if (by && by.alive && by !== t) {
     by.kills++;
     addXp(by, 40 + t.score * 0.22);
+    if (by === state.player) Sfx.kill();
   }
-  if (t === state.player) endRun(by);
+  if (t === state.player) { Sfx.die(); endRun(by); }
 }
 
 function burst(x, y, hue, n, spd) {
@@ -285,7 +346,7 @@ function botThink(t, dt) {
 }
 
 // Don't let bots swarm a tank that just spawned — that is not fun, it is a wall.
-function isFreshMeat(e) { return e.level <= 3 && e.score < 60; }
+function isFreshMeat(e) { return e.level <= 4 && e.score < 120; }
 
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0;[a[i], a[j]] = [a[j], a[i]]; } return a; }
 
@@ -336,12 +397,13 @@ function step(dt) {
       const o = state.orbs[i];
       if (dist2(t, o) < (r + o.r) * (r + o.r)) {
         addXp(t, o.xp);
+        if (t === state.player) Sfx.pickup(o.x, o.y);
         state.fx.push({ x: o.x, y: o.y, vx: 0, vy: 0, r: o.r, hue: o.hue, life: 1, max: 0.25 });
         state.orbs[i] = state.orbs[state.orbs.length - 1]; state.orbs.pop();
-      } else if (dist2(t, o) < 90000) {
-        // gentle magnet so collecting feels good
+      } else if (dist2(t, o) < MAGNET * MAGNET) {
+        // Snappy short-range magnet: orbs you're nearly touching jump to you.
         const d = Math.hypot(o.x - t.x, o.y - t.y) || 1;
-        o.x += (t.x - o.x) / d * 40 * dt; o.y += (t.y - o.y) / d * 40 * dt;
+        o.x += (t.x - o.x) / d * MAGNET_PULL * dt; o.y += (t.y - o.y) / d * MAGNET_PULL * dt;
       }
     }
 
@@ -398,6 +460,7 @@ function step(dt) {
         hurt(t, b.dmg, b.owner);
         t.vx += b.vx * 0.06; t.vy += b.vy * 0.06;
         burst(b.x, b.y, b.hue, 4, 90);
+        Sfx.hit(b.x, b.y, b.owner === state.player);
         dead = true; break;
       }
     }
@@ -417,6 +480,7 @@ function step(dt) {
     s.x = clamp(s.x, s.r, WORLD - s.r); s.y = clamp(s.y, s.r, WORLD - s.r);
     if (s.hp <= 0) {
       burst(s.x, s.y, s.hue, 14, 200);
+      Sfx.shapeBreak(s.x, s.y, clamp(s.kind.xp / 1800, 0, 1));
       for (let n = 0; n < Math.min(14, 2 + s.kind.xp / 30); n++) {
         const a = rnd(0, TAU), d = rnd(0, s.r);
         const o = makeOrb(s.x + Math.cos(a) * d, s.y + Math.sin(a) * d);
@@ -441,7 +505,7 @@ function step(dt) {
   while (state.shapes.length < SHAPE_COUNT) state.shapes.push(makeShape());
   for (const t of state.tanks) {
     if (!t.alive && t.isBot) {
-      const level = clamp(Math.round(rnd(1, 6 + state.time / 25)), 1, 30);
+      const level = clamp(Math.round(rnd(1, 3 + state.time / 45)), 1, 30);
       Object.assign(t, makeTank({ isBot: true, name: t.name, hue: rnd(0, 360) }));
       t.isBot = true; t.level = level;
       for (let i = 0; i < level - 1; i++) t.points++;
@@ -456,6 +520,7 @@ function step(dt) {
   cam.y = lerp(cam.y, focus.y, 1 - Math.pow(0.0001, dt));
   const want = clamp(1.05 - Math.pow(focus.level, 0.55) * 0.055, 0.42, 1.05);
   cam.zoom = lerp(cam.zoom, want, 1 - Math.pow(0.05, dt));
+  Sfx.listener(cam.x, cam.y, cam.zoom);
 }
 
 function damageShape(s, dmg, by) {
@@ -474,7 +539,7 @@ function resize() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
   VW = window.innerWidth; VH = window.innerHeight;
   canvas.width = VW * DPR; canvas.height = VH * DPR;
-  mini.width = mini.height = 150 * DPR;
+  mini.width = mini.height = MINI * DPR;
 }
 window.addEventListener('resize', resize);
 
@@ -601,10 +666,9 @@ function healthBar(x, y, halfW, frac, h) {
 }
 
 function drawMinimap() {
-  const S = 150;
+  const S = MINI;
   mctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  mctx.fillStyle = 'rgba(16,18,24,.85)'; mctx.fillRect(0, 0, S, S);
-  mctx.strokeStyle = '#2c313d'; mctx.strokeRect(0.5, 0.5, S - 1, S - 1);
+  mctx.clearRect(0, 0, S, S);
   const k = S / WORLD;
   for (const t of state.tanks) {
     if (!t.alive) continue;
@@ -617,46 +681,45 @@ function drawMinimap() {
 // ---------------------------------------------------------------- UI
 const el = id => document.getElementById(id);
 const ui = {
-  name: el('name'), xpfill: el('xpfill'), hpfill: el('hpfill'),
-  lvl: el('lvl'), xptext: el('xptext'), hptext: el('hptext'), score: el('score'),
-  lb: el('lb'), up: el('upgrades'), ulist: el('ulist'), points: el('points'),
-  overlay: el('overlay'), card: el('card'), tier: el('tier'),
+  name: el('name'), sub: el('sub'), xpfill: el('xpfill'), hpfill: el('hpfill'),
+  score: el('score'), lb: el('lb'), up: el('upgrades'), ulist: el('ulist'),
+  uhint: el('uhint'), overlay: el('overlay'), card: el('card'),
 };
 
 // Upgrade rows are built once, then only their pips change.
 const rows = SKILLS.map((s, i) => {
-  const d = document.createElement('div');
-  d.className = 'u';
-  d.innerHTML = `<kbd>${i + 1}</kbd><span class="label">${s.label}</span><span class="pips">${
-    Array.from({ length: SKILL_MAX }, () => '<i></i>').join('')}</span>`;
+  const d = document.createElement('button');
+  d.className = 'u'; d.type = 'button';
+  d.innerHTML = `<kbd>${i + 1}</kbd><span class="label">${s.label}</span>` +
+                `<span class="meter"><i></i></span>`;
   d.onclick = () => { spend(state.player, s.key); syncUI(); };
   ui.ulist.appendChild(d);
-  return { el: d, pips: [...d.querySelectorAll('.pips i')], key: s.key };
+  return { el: d, fill: d.querySelector('.meter i'), key: s.key };
 });
 
 function syncUI() {
   const p = state.player;
   if (!p) return;
   ui.name.textContent = p.name;
-  ui.tier.textContent = tierOf(p).name;
-  ui.lvl.textContent = p.level;
+  ui.sub.textContent = `Lv ${p.level} \u00b7 ${tierOf(p).name}`;
   const need = xpForLevel(p.level);
   ui.xpfill.style.width = (p.level >= MAX_LEVEL ? 100 : (p.xp / need) * 100) + '%';
-  ui.xptext.textContent = p.level >= MAX_LEVEL ? 'MAX' : `${Math.floor(p.xp)} / ${need}`;
   ui.hpfill.style.width = clamp(p.hp / p.maxhp, 0, 1) * 100 + '%';
-  ui.hptext.textContent = `${Math.max(0, Math.ceil(p.hp))} / ${Math.ceil(p.maxhp)}`;
   ui.score.textContent = Math.floor(p.score).toLocaleString();
-  ui.points.textContent = p.points;
-  ui.up.style.display = p.points > 0 || p.level > 1 ? 'block' : 'none';
-  for (const r of rows) {
-    const n = p.skills[r.key];
-    for (let i = 0; i < SKILL_MAX; i++) r.pips[i].className = i < n ? 'on' : '';
-    r.el.style.opacity = p.points > 0 && n < SKILL_MAX ? 1 : 0.55;
+  // The upgrade panel only exists when there is something to spend.
+  ui.up.classList.toggle('show', p.points > 0);
+  if (p.points > 0) {
+    ui.uhint.textContent = p.points === 1 ? '1 point' : `${p.points} points`;
+    for (const r of rows) {
+      const n = p.skills[r.key];
+      r.fill.style.width = (n / SKILL_MAX) * 100 + '%';
+      r.el.disabled = n >= SKILL_MAX;
+    }
   }
 }
 
 function syncLeaderboard() {
-  const top = state.tanks.filter(t => t.alive).sort((a, b) => b.score - a.score).slice(0, 10);
+  const top = state.tanks.filter(t => t.alive).sort((a, b) => b.score - a.score).slice(0, 6);
   ui.lb.innerHTML = top.map((t, i) =>
     `<li class="${t === state.player ? 'me' : ''}"><b>${i + 1}</b><span>${escapeHtml(t.name)}</span><em>${Math.floor(t.score).toLocaleString()}</em></li>`
   ).join('');
@@ -690,7 +753,7 @@ function startRun(name) {
   const names = shuffle(BOT_NAMES.slice());
   for (let i = 0; i < BOT_COUNT; i++) {
     const b = makeTank({ isBot: true, name: names[i % names.length] + (i >= names.length ? i : '') });
-    const lv = clamp(Math.round(rnd(1, 14)), 1, 20);
+    const lv = clamp(Math.round(rnd(1, 5)), 1, 8);
     b.level = lv;
     for (let j = 0; j < lv - 1; j++) b.points++;
     b.maxhp = maxHp(b); b.hp = b.maxhp;
@@ -700,6 +763,7 @@ function startRun(name) {
   p.x = spot.x; p.y = spot.y; p.invuln = 3;
   state.cam.x = p.x; state.cam.y = p.y; state.cam.zoom = 1;
   state.running = true;
+  Sfx.start();
   ui.overlay.classList.add('hidden');
   syncUI();
 }
@@ -749,12 +813,13 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space') e.preventDefault();
   if (!state.running) {
     if (e.code === 'Enter') {
-      const btn = el('again') || el('play');
-      if (btn) btn.click();
+      const btn = el('again');
+      if (btn) btn.click(); else tryPlay();
     }
     return;
   }
   if (e.code === 'KeyE') { state.autofire = !state.autofire; }
+  if (e.code === 'KeyM') { setMuteLabel(Sfx.toggle()); }
   const n = e.code.match(/^Digit([1-8])$/);
   if (n) { spend(state.player, SKILLS[+n[1] - 1].key); syncUI(); }
 });
@@ -776,7 +841,27 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+function setMuteLabel(m) {
+  const b = el('mute');
+  if (b) { b.textContent = m ? 'Sound off' : 'Sound on'; b.classList.toggle('off', m); }
+}
+
+function tryPlay() {
+  const input = el('nick'), err = el('nameerr');
+  const v = validateName(input.value || '');
+  if (!v.ok) {
+    Sfx.init(); Sfx.deny();
+    err.textContent = v.error;
+    input.focus();
+    return;
+  }
+  err.textContent = '';
+  startRun(v.name);
+}
+
 resize();
-el('play').onclick = () => startRun(el('nick').value.trim().slice(0, 14) || 'you');
+el('play').onclick = tryPlay;
+el('nick').addEventListener('input', () => { el('nameerr').textContent = ''; });
+el('mute').onclick = () => { Sfx.init(); setMuteLabel(Sfx.toggle()); };
 requestAnimationFrame(frame);
 })();
