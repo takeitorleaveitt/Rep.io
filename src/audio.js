@@ -252,6 +252,32 @@ window.Sfx = (() => {
       env(g, t0, 0.7, 0.002, 0.09); g.connect(o.node);
     },
 
+    // Shot stopped by a spawn shield: glassy ping, clearly not a flesh hit.
+    shield(x, y) {
+      if (!gate('shield', 0.05, x, y)) return;
+      const t0 = now();
+      const o = out(x, y, 0.22, 0.8);
+      const g = ctx.createGain();
+      tone('sine', 1250, 1150, 0.22, t0).connect(g);
+      tone('sine', 1870, 1740, 0.22, t0).connect(g);
+      env(g, t0, 0.5, 0.002, 0.22);
+      g.connect(o.node);
+    },
+
+    // Weapon swap: mechanical two-stage clunk, no pitch content.
+    weapon() {
+      if (!gate('weapon', 0.06)) return;
+      const t0 = now();
+      const o = out(undefined, undefined, 0.3, 0.25);
+      const a1 = noiseVoice(0.05, 'bandpass', 1800, 3);
+      const g1 = ctx.createGain(); a1.f.connect(g1); env(g1, t0, 0.5, 0.001, 0.05); g1.connect(o.node);
+      const a2 = noiseVoice(0.07, 'bandpass', 700, 4);
+      const g2 = ctx.createGain(); a2.f.connect(g2); env(g2, t0 + 0.045, 0.6, 0.001, 0.075); g2.connect(o.node);
+      const th = ctx.createGain();
+      tone('sine', 180, 90, 0.1, t0 + 0.04).connect(th);
+      env(th, t0 + 0.04, 0.4, 0.002, 0.1); th.connect(o.node);
+    },
+
     // UI: rejected input (bad nickname, no points left).
     deny() {
       if (!gate('ui', 0.05)) return;

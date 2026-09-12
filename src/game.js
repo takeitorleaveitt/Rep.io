@@ -9,36 +9,52 @@ const WORLD = 6400;            // square arena, 0..WORLD on both axes
 const ORB_COUNT = 1350;
 const SHAPE_COUNT = 190;
 const BOT_COUNT = 12;
-const MAX_LEVEL = 45;
+const MAX_LEVEL = 75;
 const FRICTION = 0.87;
 const MAGNET = 150;            // pull radius, half of what it used to be
-const MAGNET_PULL = 140;       // 3.5x the old pull speed
+const MAGNET_PULL = 280;       // twice as fast again
+const BULLET_RANGE = 1850;     // default reach in world units, not seconds
 const TAU = Math.PI * 2;
 const MINI = 124;              // minimap edge length in CSS pixels
+const FLOOR = '#ffffff';       // arena floor
+const GRID  = 'rgba(0, 0, 0, 0.28)';   // black grid, dialled back so it does not vibrate
+const INK   = '#171a21';       // world-space text on the white floor
 
 const SKILLS = [
   { key: 'reload', label: 'Reload'      },
   { key: 'damage', label: 'Damage'      },
   { key: 'pen',    label: 'Bullet HP'   },
   { key: 'bspeed', label: 'Bullet Spd'  },
-  { key: 'body',   label: 'Body Damage' },
   { key: 'hp',     label: 'Health'      },
   { key: 'regen',  label: 'Regen'       },
   { key: 'speed',  label: 'Move Speed'  },
 ];
-const SKILL_MAX = 8;
+const SKILL_MAX = 9;
 
 // Barrel layouts unlock with level, diep.io style.
 const TIERS = [
   { level: 1,  name: 'Scout',      barrels: [{ a: 0, w: 1, spread: 0.05 }] },
   { level: 6,  name: 'Twin',       barrels: [{ a: -0.10, w: 0.8 }, { a: 0.10, w: 0.8 }] },
-  { level: 12, name: 'Sniper',     barrels: [{ a: 0, w: 1.25, spread: 0.008, speed: 1.7, dmg: 1.8, rate: 2.1 }] },
+  { level: 12, name: 'Sniper',     barrels: [{ a: 0, w: 1.25, spread: 0.008, speed: 1.7, dmg: 1.8, rate: 2.1, range: 1.9 }] },
   { level: 18, name: 'Triplet',    barrels: [{ a: -0.30, w: .8 }, { a: 0, w: 1 }, { a: 0.30, w: .8 }] },
   { level: 24, name: 'Hunter',     barrels: [{ a: -0.26, w: .8 }, { a: 0.26, w: .8 }, { a: Math.PI, w: 1, rate: 1.4 }] },
   { level: 30, name: 'Spreadshot', barrels: [{ a: -0.55, w: .7 }, { a: -0.28, w: .8 }, { a: 0, w: 1 }, { a: 0.28, w: .8 }, { a: 0.55, w: .7 }] },
   { level: 38, name: 'Annihilator',barrels: [
       { a: 0, w: 1.5, speed: 0.85, dmg: 2.6, rate: 2.4, size: 1.7 },
       { a: Math.PI * 0.66, w: .7 }, { a: -Math.PI * 0.66, w: .7 }] },
+  // The last three. Each is a different answer, not a strict upgrade — which is
+  // the point of being able to switch back and forth.
+  { level: 45, name: 'Octo', barrels: Array.from({ length: 8 }, (_, i) => (
+      { a: i * Math.PI / 4, w: 0.72, dmg: 0.72, rate: 1.15, range: 0.8 })) },
+  { level: 55, name: 'Railgun', barrels: [
+      { a: 0, w: 1.1, spread: 0.004, speed: 2.6, dmg: 5.5, rate: 4.2, size: 1.25, range: 2.4 },
+      { a: Math.PI * 0.8, w: .55, dmg: .4, rate: 4.2 },
+      { a: -Math.PI * 0.8, w: .55, dmg: .4, rate: 4.2 }] },
+  { level: 75, name: 'Overlord', barrels: [
+      { a: 0, w: 1.6, speed: 1.15, dmg: 2.2, rate: 1.5, size: 1.4 },
+      { a: -0.42, w: .85, dmg: 1.1 }, { a: 0.42, w: .85, dmg: 1.1 },
+      { a: -0.85, w: .7 }, { a: 0.85, w: .7 },
+      { a: Math.PI * 0.88, w: .8, rate: 1.5 }, { a: -Math.PI * 0.88, w: .8, rate: 1.5 }] },
 ];
 
 const SHAPE_KINDS = [
@@ -58,8 +74,18 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const dist2 = (a, b) => { const dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; };
 const pick = a => a[(Math.random() * a.length) | 0];
 const lerp = (a, b, t) => a + (b - a) * t;
+// Squared distance from point (px,py) to segment (ax,ay)-(bx,by).
+function segDist2(ax, ay, bx, by, px, py) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const qx = ax + dx * t - px, qy = ay + dy * t - py;
+  return qx * qx + qy * qy;
+}
+
 function angDiff(a, b) { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; return d; }
-function xpForLevel(l) { return Math.round(16 * Math.pow(l, 1.35)); }
+function xpForLevel(l) { return Math.round(13 * Math.pow(l, 1.1)); }
 
 // ---------------------------------------------------------------- nicknames
 const NAME_MIN = 2, NAME_MAX = 17;
@@ -144,11 +170,12 @@ function makeTank(opts = {}) {
     id: Math.random().toString(36).slice(2),
     name: opts.name || 'anon', isBot: !!opts.isBot,
     x: opts.x ?? rnd(200, WORLD - 200), y: opts.y ?? rnd(200, WORLD - 200),
+    px: 0, py: 0,
     vx: 0, vy: 0, angle: rnd(0, TAU), aim: 0,
     level: 1, xp: 0, score: 0, kills: 0, points: 0,
     skills: SKILLS.reduce((o, s) => (o[s.key] = 0, o), {}),
     hue: opts.hue ?? rnd(0, 360),
-    cool: 0, recoil: 0, flash: 0, alive: true, invuln: 3,
+    cool: 0, recoil: 0, flash: 0, alive: true, invuln: 3, weapon: 0,
     hp: 1, ai: { mode: 'roam', target: null, wander: rnd(0, TAU), t: 0, jitter: 0 },
   };
   t.maxhp = maxHp(t); t.hp = t.maxhp;
@@ -163,16 +190,29 @@ const botEdge = t => t.isBot ? clamp(0.45 + state.time / 240, 0.45, 1) : 1;
 const maxHp    = t => (52 + (t.level - 1) * 7 + t.skills.hp * 22) * (t.isBot ? lerp(0.55, 1, botEdge(t)) : 1);
 const regenOf  = t => 0.35 + t.skills.regen * 1.5 + maxHp(t) * 0.0007 * t.skills.regen;
 const speedOf  = t => (262 + t.skills.speed * 26) * (1 - Math.min(0.32, t.level * 0.004));
-const bodyDmg  = t => (8 + t.skills.body * 8 + t.level * 0.5) * botEdge(t);
+const bodyDmg  = t => (10 + t.level * 1.1) * botEdge(t);
 const fireRate = t => (0.42 / (1 + t.skills.reload * 0.16)) * (t.isBot ? lerp(1.7, 1, botEdge(t)) : 1);
 const bulletDmg= t => (7 + t.skills.damage * 4.5 + t.level * 0.32) * botEdge(t);
 const bulletHp = t => 6 + t.skills.pen * 5 + t.level * 0.2;
 const bulletSpd= t => 560 + t.skills.bspeed * 55;
 
+// Every gun the tank has earned, oldest first.
+function unlocked(t) { return TIERS.filter(tr => t.level >= tr.level); }
+
+// Players fire whichever gun they have selected; bots always take their newest.
 function tierOf(t) {
-  let best = TIERS[0];
-  for (const tr of TIERS) if (t.level >= tr.level) best = tr;
-  return best;
+  const list = unlocked(t);
+  if (t.isBot) return list[list.length - 1];
+  t.weapon = clamp(t.weapon | 0, 0, list.length - 1);
+  return list[t.weapon];
+}
+
+function switchWeapon(t, delta) {
+  const n = unlocked(t).length;
+  if (n < 2) return false;
+  t.weapon = ((t.weapon + delta) % n + n) % n;
+  t.cool = Math.max(t.cool, 0.18);   // small swap penalty so it isn't a free burst
+  return true;
 }
 
 // ---------------------------------------------------------------- progression
@@ -186,6 +226,12 @@ function addXp(t, amount) {
     t.maxhp = maxHp(t);
     t.hp += t.maxhp - before;
     if (t === state.player) { burst(t.x, t.y, t.hue, 26, 260); Sfx.levelUp(); }
+    // Unlocking a gun selects it, so the reward is immediate; you can switch back.
+    const guns = unlocked(t).length;
+    if (guns - 1 > t.weapon && TIERS[guns - 1].level === t.level) {
+      t.weapon = guns - 1;
+      if (t === state.player) { Sfx.weapon(); syncWeapons(); }
+    }
   }
   if (t.level >= MAX_LEVEL) t.xp = Math.min(t.xp, xpForLevel(MAX_LEVEL));
 }
@@ -218,12 +264,16 @@ function shoot(t) {
       vx: Math.cos(ang) * speed + t.vx * 0.35,
       vy: Math.sin(ang) * speed + t.vy * 0.35,
       r: size, dmg: bulletDmg(t) * (b.dmg ?? 1),
-      hp: bulletHp(t) * (b.dmg ?? 1), life: 1.35 + (b.speed ?? 1) * 0.5,
+      hp: bulletHp(t) * (b.dmg ?? 1),
+      // Live long enough to cross the gun's reach AND whatever is on screen, so
+      // a shot never evaporates in front of a target the player is aiming at.
+      life: Math.max(BULLET_RANGE * (b.range ?? 1), 780 / state.cam.zoom) / speed,
     });
     t.vx -= Math.cos(ang) * speed * 0.035;
     t.vy -= Math.sin(ang) * speed * 0.035;
   }
   t.recoil = 1;
+  t.invuln = 0;                 // shooting drops your spawn shield
   t.cool = fireRate(t) * (tier.barrels[0].rate ?? 1);
   Sfx.shoot(t.x, t.y, tier.barrels[0].size ?? 1, t === state.player);
 }
@@ -381,6 +431,7 @@ function step(dt) {
     t.vx *= fr; t.vy *= fr;
     const sp = Math.hypot(t.vx, t.vy), max = speedOf(t);
     if (sp > max) { t.vx = t.vx / sp * max; t.vy = t.vy / sp * max; }
+    t.px = t.x; t.py = t.y;
     t.x += t.vx * dt; t.y += t.vy * dt;
 
     const r = radiusOf(t);
@@ -395,7 +446,7 @@ function step(dt) {
     // eat orbs
     for (let i = state.orbs.length - 1; i >= 0; i--) {
       const o = state.orbs[i];
-      if (dist2(t, o) < (r + o.r) * (r + o.r)) {
+      if (segDist2(t.px, t.py, t.x, t.y, o.x, o.y) < (r + o.r) * (r + o.r)) {
         addXp(t, o.xp);
         if (t === state.player) Sfx.pickup(o.x, o.y);
         state.fx.push({ x: o.x, y: o.y, vx: 0, vy: 0, r: o.r, hue: o.hue, life: 1, max: 0.25 });
@@ -438,13 +489,15 @@ function step(dt) {
   // --- bullets
   for (let i = state.bullets.length - 1; i >= 0; i--) {
     const b = state.bullets[i];
+    // Keep the previous position so this step can be tested as a swept segment.
+    const px = b.x, py = b.y;
     b.x += b.vx * dt; b.y += b.vy * dt;
     b.life -= dt;
     let dead = b.life <= 0 || b.x < 0 || b.y < 0 || b.x > WORLD || b.y > WORLD;
 
     if (!dead) for (const s of state.shapes) {
       const rr = b.r + s.r;
-      if (dist2(b, s) < rr * rr) {
+      if (segDist2(px, py, b.x, b.y, s.x, s.y) < rr * rr) {
         damageShape(s, b.dmg, b.owner);
         s.vx += b.vx * 0.05; s.vy += b.vy * 0.05;
         b.hp -= s.kind.hp * 0.25; dead = b.hp <= 0;
@@ -454,13 +507,19 @@ function step(dt) {
     }
 
     if (!dead) for (const t of state.tanks) {
-      if (!t.alive || t === b.owner || t.invuln > 0) continue;
+      if (!t.alive || t === b.owner) continue;
       const rr = b.r + radiusOf(t);
-      if (dist2(b, t) < rr * rr) {
+      if (segDist2(px, py, b.x, b.y, t.x, t.y) < rr * rr) {
+        if (t.invuln > 0) {
+          // Blocked, not ignored: the round stops on the shield and says so.
+          burst(b.x, b.y, 200, 5, 120);
+          Sfx.shield(b.x, b.y);
+          dead = true; break;
+        }
         hurt(t, b.dmg, b.owner);
         t.vx += b.vx * 0.06; t.vy += b.vy * 0.06;
-        burst(b.x, b.y, b.hue, 4, 90);
-        Sfx.hit(b.x, b.y, b.owner === state.player);
+        burst(t.x, t.y, b.hue, 4, 90);
+        Sfx.hit(t.x, t.y, b.owner === state.player);
         dead = true; break;
       }
     }
@@ -551,7 +610,7 @@ function worldFromScreen(sx, sy) {
 function draw() {
   const z = state.cam.zoom, cam = state.cam;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = '#14161c';
+  ctx.fillStyle = FLOOR;
   ctx.fillRect(0, 0, VW, VH);
   ctx.save();
   ctx.translate(VW / 2, VH / 2); ctx.scale(z, z); ctx.translate(-cam.x, -cam.y);
@@ -563,13 +622,13 @@ function draw() {
 
   // grid
   const G = 64;
-  ctx.strokeStyle = '#1c1f27'; ctx.lineWidth = 1 / z; ctx.beginPath();
+  ctx.strokeStyle = GRID; ctx.lineWidth = 1 / z; ctx.beginPath();
   for (let x = Math.floor(view.x0 / G) * G; x < view.x1; x += G) { ctx.moveTo(x, view.y0); ctx.lineTo(x, view.y1); }
   for (let y = Math.floor(view.y0 / G) * G; y < view.y1; y += G) { ctx.moveTo(view.x0, y); ctx.lineTo(view.x1, y); }
   ctx.stroke();
 
   // out-of-bounds shading
-  ctx.fillStyle = 'rgba(200,40,60,0.10)';
+  ctx.fillStyle = 'rgba(200,40,60,0.13)';
   if (view.x0 < 0) ctx.fillRect(view.x0, view.y0, -view.x0, view.y1 - view.y0);
   if (view.y0 < 0) ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, -view.y0);
   if (view.x1 > WORLD) ctx.fillRect(WORLD, view.y0, view.x1 - WORLD, view.y1 - view.y0);
@@ -579,7 +638,7 @@ function draw() {
   for (const o of state.orbs) {
     if (!vis(o, 10)) continue;
     const wob = 1 + Math.sin(state.time * 3 + o.ph) * 0.08;
-    ctx.fillStyle = `hsl(${o.hue} 80% 62%)`;
+    ctx.fillStyle = `hsl(${o.hue} 75% 52%)`;
     ctx.beginPath(); ctx.arc(o.x, o.y, o.r * wob, 0, TAU); ctx.fill();
   }
 
@@ -593,7 +652,7 @@ function draw() {
       ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * s.r, Math.sin(a) * s.r);
     }
     ctx.closePath();
-    const light = 55 + s.flash * 35;
+    const light = 50 + s.flash * 32;
     ctx.fillStyle = `hsl(${s.hue} 72% ${light}%)`;
     ctx.fill();
     ctx.lineWidth = 3 / 1; ctx.strokeStyle = `hsl(${s.hue} 60% ${light - 22}%)`; ctx.stroke();
@@ -604,9 +663,9 @@ function draw() {
   // bullets
   for (const b of state.bullets) {
     if (!vis(b, 8)) continue;
-    ctx.fillStyle = `hsl(${b.hue} 85% 66%)`;
+    ctx.fillStyle = `hsl(${b.hue} 80% 55%)`;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
-    ctx.strokeStyle = `hsl(${b.hue} 70% 40%)`; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = `hsl(${b.hue} 70% 32%)`; ctx.lineWidth = 2; ctx.stroke();
   }
 
   // tanks
@@ -615,7 +674,7 @@ function draw() {
   // particles
   for (const f of state.fx) {
     ctx.globalAlpha = clamp(f.life, 0, 1);
-    ctx.fillStyle = `hsl(${f.hue} 85% 66%)`;
+    ctx.fillStyle = `hsl(${f.hue} 78% 55%)`;
     ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.4 + f.life), 0, TAU); ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -632,34 +691,35 @@ function drawTank(t) {
   for (const b of tier.barrels) {
     const w = r * 0.66 * (b.w ?? 1), len = r * (1.35 + ((b.speed ?? 1) - 1) * 0.45) * (b.size ?? 1);
     ctx.save(); ctx.rotate(b.a);
-    ctx.fillStyle = '#9aa3b2'; ctx.strokeStyle = '#6e7684'; ctx.lineWidth = 3;
+    ctx.fillStyle = '#8d95a4'; ctx.strokeStyle = '#5b616d'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.rect(-back, -w / 2, len, w); ctx.fill(); ctx.stroke();
     ctx.restore();
   }
   // body
-  const light = 58 + t.flash * 30;
+  const light = 54 + t.flash * 30;
   ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU);
-  ctx.fillStyle = t.invuln > 0 && ((state.time * 10) | 0) % 2 ? '#ffffff' : `hsl(${t.hue} 68% ${light}%)`;
+  ctx.fillStyle = t.invuln > 0 && ((state.time * 10) | 0) % 2 ? '#dfe6ef' : `hsl(${t.hue} 68% ${light}%)`;
   ctx.fill();
-  ctx.lineWidth = 4; ctx.strokeStyle = `hsl(${t.hue} 55% ${light - 24}%)`; ctx.stroke();
+  ctx.lineWidth = 4; ctx.strokeStyle = `hsl(${t.hue} 60% ${light - 28}%)`; ctx.stroke();
   ctx.restore();
 
   // name + bars
   ctx.font = '600 15px Segoe UI, system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.55)';
-  const label = t === state.player ? t.name : `${t.name}`;
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,.9)';
+  const label = t.name;
   ctx.strokeText(label, t.x, t.y - r - 16);
-  ctx.fillStyle = t === state.player ? '#ffffff' : '#dfe6f0';
+  ctx.fillStyle = t === state.player ? '#0b6d8c' : INK;
   ctx.fillText(label, t.x, t.y - r - 16);
   ctx.font = '500 11px Segoe UI, system-ui, sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.strokeText(`Lv ${t.level} ${tier.name}`, t.x, t.y - r - 4);
+  ctx.fillStyle = 'rgba(0,0,0,.5)';
   ctx.fillText(`Lv ${t.level} ${tier.name}`, t.x, t.y - r - 4);
   if (t.hp < t.maxhp) healthBar(t.x, t.y + r + 11, r * 1.4, t.hp / t.maxhp, 5);
 }
 
 function healthBar(x, y, halfW, frac, h) {
-  ctx.fillStyle = 'rgba(0,0,0,.5)';
+  ctx.fillStyle = 'rgba(0,0,0,.22)';
   ctx.beginPath(); ctx.roundRect(x - halfW, y, halfW * 2, h, h / 2); ctx.fill();
   ctx.fillStyle = frac > 0.4 ? '#45dd80' : frac > 0.18 ? '#ffc65a' : '#ff5a5a';
   ctx.beginPath(); ctx.roundRect(x - halfW, y, halfW * 2 * clamp(frac, 0, 1), h, h / 2); ctx.fill();
@@ -673,7 +733,7 @@ function drawMinimap() {
   for (const t of state.tanks) {
     if (!t.alive) continue;
     const me = t === state.player;
-    mctx.fillStyle = me ? '#57d2ff' : `hsl(${t.hue} 70% 60%)`;
+    mctx.fillStyle = me ? '#0b93c4' : `hsl(${t.hue} 65% 45%)`;
     mctx.beginPath(); mctx.arc(t.x * k, t.y * k, me ? 3.4 : 2, 0, TAU); mctx.fill();
   }
 }
@@ -683,7 +743,7 @@ const el = id => document.getElementById(id);
 const ui = {
   name: el('name'), sub: el('sub'), xpfill: el('xpfill'), hpfill: el('hpfill'),
   score: el('score'), lb: el('lb'), up: el('upgrades'), ulist: el('ulist'),
-  uhint: el('uhint'), overlay: el('overlay'), card: el('card'),
+  uhint: el('uhint'), overlay: el('overlay'), card: el('card'), guns: el('guns'),
 };
 
 // Upgrade rows are built once, then only their pips change.
@@ -708,6 +768,7 @@ function syncUI() {
   ui.score.textContent = Math.floor(p.score).toLocaleString();
   // The upgrade panel only exists when there is something to spend.
   ui.up.classList.toggle('show', p.points > 0);
+  if (gunChips.length !== unlocked(p).length) syncWeapons();
   if (p.points > 0) {
     ui.uhint.textContent = p.points === 1 ? '1 point' : `${p.points} points`;
     for (const r of rows) {
@@ -716,6 +777,27 @@ function syncUI() {
       r.el.disabled = n >= SKILL_MAX;
     }
   }
+}
+
+// The gun strip is rebuilt only when a new gun unlocks; otherwise just restyled.
+let gunChips = [];
+function syncWeapons() {
+  const p = state.player;
+  if (!p) return;
+  const list = unlocked(p);
+  if (gunChips.length !== list.length) {
+    ui.guns.innerHTML = '';
+    gunChips = list.map((tr, i) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'gun';
+      b.innerHTML = `<span>${tr.name}</span>`;
+      b.onclick = () => { if (p.weapon !== i) { p.weapon = i; Sfx.weapon(); syncWeapons(); } };
+      ui.guns.appendChild(b);
+      return b;
+    });
+  }
+  ui.guns.classList.toggle('show', list.length > 1);
+  gunChips.forEach((b, i) => b.classList.toggle('on', i === p.weapon));
 }
 
 function syncLeaderboard() {
@@ -762,6 +844,8 @@ function startRun(name) {
   const spot = safeSpawn();          // bots exist by now, so place the player clear of them
   p.x = spot.x; p.y = spot.y; p.invuln = 3;
   state.cam.x = p.x; state.cam.y = p.y; state.cam.zoom = 1;
+  gunChips = [];
+  syncWeapons();
   state.running = true;
   Sfx.start();
   ui.overlay.classList.add('hidden');
@@ -793,6 +877,11 @@ canvas.addEventListener('mousemove', e => { state.mouse.x = e.clientX; state.mou
 canvas.addEventListener('mousedown', e => { if (e.button === 0) state.mouse.down = true; });
 window.addEventListener('mouseup', () => { state.mouse.down = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => {
+  if (!state.running) return;
+  e.preventDefault();
+  if (switchWeapon(state.player, e.deltaY > 0 ? 1 : -1)) { Sfx.weapon(); syncWeapons(); }
+}, { passive: false });
 canvas.addEventListener('touchstart', e => {
   e.preventDefault(); const t = e.touches[0];
   state.mouse.x = t.clientX; state.mouse.y = t.clientY; state.mouse.down = true;
@@ -820,8 +909,12 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'KeyE') { state.autofire = !state.autofire; }
   if (e.code === 'KeyM') { setMuteLabel(Sfx.toggle()); }
-  const n = e.code.match(/^Digit([1-8])$/);
-  if (n) { spend(state.player, SKILLS[+n[1] - 1].key); syncUI(); }
+  if (e.code === 'KeyQ' || e.code === 'Tab') {
+    e.preventDefault();
+    if (switchWeapon(state.player, e.shiftKey ? -1 : 1)) { Sfx.weapon(); syncWeapons(); }
+  }
+  const n = e.code.match(/^Digit([1-9])$/);
+  if (n && +n[1] <= SKILLS.length) { spend(state.player, SKILLS[+n[1] - 1].key); syncUI(); }
 });
 window.addEventListener('keyup', e => { state.keys[e.code] = false; });
 window.addEventListener('blur', () => { state.keys = Object.create(null); state.mouse.down = false; });
